@@ -1,8 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
+
+use std::path::PathBuf;
 
 use actix_web::{
     middleware::Logger,
@@ -11,6 +13,7 @@ use actix_web::{
     App, HttpRequest, HttpResponse, HttpServer, Responder, Result as WebResult,
 };
 use anyhow::Result;
+use clap::Clap;
 use itertools::Itertools;
 use log::*;
 use prost::Message;
@@ -48,11 +51,12 @@ fn table_name_escape(name: &str) -> String {
 }
 
 fn handle_stable_schema<'prom>(
-    taos: &Taos,
+    state: &web::Data<AppState>,
     database: &str,
     timeseries: &'prom protos::TimeSeries,
 ) -> Result<()> {
-    info!("handle stable start");
+    debug!("handle stable start");
+    let taos = state.pool.get()?;
     let (name, labels): (_, Vec<_>) = timeseries
         .labels
         .iter()
@@ -66,7 +70,7 @@ fn handle_stable_schema<'prom>(
     let stable_name = table_name_escape(metrics_name);
 
     let mut schema = taos.describe(&format!("{}.{}", database, &stable_name));
-    trace!("{:?}", &schema);
+    trace!("schema: {:?}", &schema);
     if let Err(taos::Error::RawTaosError(taos::TaosError { code, err })) = schema {
         match code {
             taos::TaosCode::MnodeInvalidTableName => {
@@ -99,7 +103,6 @@ fn handle_stable_schema<'prom>(
             .expect("first show always exist in describe results")
             .to_string()
     }));
-    dbg!(&fields);
 
     let mut tagmap = BTreeMap::new();
     for label in &labels {
@@ -113,7 +116,6 @@ fn handle_stable_schema<'prom>(
         }
         tagmap.insert(&label.name, &label.value);
     }
-    dbg!(&tagmap);
 
     let tag_values = labels.iter().map(|label| &label.value).join("");
     let table_name = format!("{}{}", metrics_name, tag_values);
@@ -134,27 +136,32 @@ fn handle_stable_schema<'prom>(
             .map(|value| format!("\"{}\"", value))
             .join(",")
     );
-    info!("create table {}.{} done", database, table_name);
+    debug!("created table {}.{}", database, table_name);
     trace!("create table with sql: {}", sql);
     taos.exec(&sql)?;
-    info!("handle stable done");
+    debug!("handle stable done");
     Ok(())
 }
-fn handle_table_schema(taos: &Taos, database: &str, req: &protos::WriteRequest) -> Result<()> {
+fn handle_table_schema(
+    state: &web::Data<AppState>,
+    database: &str,
+    req: &protos::WriteRequest,
+) -> Result<()> {
     for ts in &req.timeseries {
         // handle stable
-        handle_stable_schema(taos, database, ts)?;
+        handle_stable_schema(state, database, ts)?;
     }
     trace!("handle table schema");
     Ok(())
 }
 async fn write_tdengine_from_prometheus_write_request(
-    taos: &Taos,
-    mgr: &DatabaseExistsMap,
+    state: &web::Data<AppState>,
     database: &str,
-    req: protos::WriteRequest,
+    req: &protos::WriteRequest,
 ) -> Result<()> {
-    trace!("Write tdengine from prometheus write request");
+    debug!("Write tdengine from prometheus write request");
+    let mgr = &state.mgr;
+    let taos = state.pool.get()?;
 
     // 1. check table exists.
     let database_exists = {
@@ -167,7 +174,7 @@ async fn write_tdengine_from_prometheus_write_request(
         trace!("database does not exist, create it: {}", database);
         let mut mgr = mgr.write().unwrap();
         trace!("get write lock");
-        let _ = create_database(taos, database)?;
+        let _ = create_database(&taos, database)?;
         mgr.insert(database.into(), Default::default());
         trace!("manager: {:?}", mgr.deref());
         trace!("database created: {}", database);
@@ -206,7 +213,8 @@ async fn write_tdengine_from_prometheus_write_request(
     if let Err(taos::Error::RawTaosError(err)) = taos.query(&sql) {
         match err.code {
             TaosCode::ClientInvalidTableName | TaosCode::MnodeInvalidTableName => {
-                handle_table_schema(taos, database, &req)?;
+                let _  = state.create_table_lock.lock().unwrap();
+                handle_table_schema(&state, database, &req)?;
                 taos.query(&sql)?;
             }
             _ => {}
@@ -216,13 +224,18 @@ async fn write_tdengine_from_prometheus_write_request(
 }
 #[post("/adapters/prometheus/{database}")]
 async fn prometheus(
-    pool: web::Data<TaosPool>,
-    mgr: web::Data<DatabaseExistsMap>,
+    //pool: web::Data<TaosPool>,
+    //mgr: web::Data<DatabaseExistsMap>,
+    //create_table_lock: web::Data<Mutex<i32>>,
+    state: web::Data<AppState>,
     web::Path(database): web::Path<String>,
     bytes: Bytes,
     req: HttpRequest,
 ) -> WebResult<HttpResponse> {
-    println!("{:?}", req.headers());
+    //let _ = create_table_lock.lock();
+    let pool = &state.pool;
+    let mgr = &state.mgr;
+    debug!("headers: {:?}", req.headers());
     let bytes = bytes.deref();
     let mut decoder = snap::raw::Decoder::new();
     // println!("decompressing");
@@ -234,36 +247,93 @@ async fn prometheus(
     let conn = pool.get().expect("couldn't get db connection from pool");
 
     //println!("{:?}", write_request);
-    let _ =
-        write_tdengine_from_prometheus_write_request(&conn, mgr.deref(), &database, write_request)
-            .await;
+
+    // write prometheus with 8 retries in case of error
+    for _ in 0..8 {
+        let res =
+            write_tdengine_from_prometheus_write_request(&state, &database, &write_request).await;
+        if res.is_ok() {
+            return Ok(HttpResponse::Ok().finish());
+        }
+    }
+
+    // if not success, write data and save it to persistent storage.
+
     // body is loaded, now we can deserialize
     Ok(HttpResponse::Ok().finish())
 }
 
+/// TDengine adapter for prometheus.
+#[derive(Debug, Clap)]
+#[clap(setting = clap::AppSettings::ColoredHelp)]
+#[clap(version, author)]
+struct Opts {
+    /// Debug level
+    #[clap(short, long, default_value = "info")]
+    level: log::LevelFilter,
+    /// TDengine host IP or hostname.
+    #[clap(short, long, default_value = "localhost")]
+    host: String,
+    /// TDengine server port
+    #[clap(short, long, default_value = "6030")]
+    port: u16,
+    /// TDengine user
+    #[clap(short, long, default_value = "root")]
+    user: String,
+    /// TDengine password
+    #[clap(short = 'P', long, default_value = "taosdata")]
+    password: String,
+    #[clap(short = 'L', long, default_value = "0.0.0.0:10203")]
+    listen: String,
+}
+
+pub struct AppState {
+    pool: taos::TaosPool,
+    mgr: DatabaseExistsMap,
+    create_table_lock: Mutex<i32>,
+}
+
 #[actix_web::main]
 async fn main() -> Result<()> {
-    std::env::set_var("RUST_LOG", "actix_web=trace,bailongma=trace");
+    let opts: Opts = Opts::parse();
+
+    std::env::set_var(
+        "RUST_LOG",
+        format!("actix_web=info,bailongma={}", opts.level.to_string()),
+    );
+    // fern::Dispatch::new()
+    //         .level(opts.level)
+    //         .chain(std::io::stdout())
+    //         .chain(fern::log_file("output.log")?)
+    //         .apply()?;
     env_logger::init();
+    //dbg!(&opts);
+    //let create_table_lock = Arc::new(Mutex::new(0));
     let taos_cfg = TaosCfgBuilder::default()
-        .ip("localhost")
-        .user("root")
-        .pass("taosdata")
+        .ip(&opts.host)
+        .user(&opts.user)
+        .pass(&opts.password)
         .db("log")
-        .port(6030u16)
+        .port(opts.port)
         .build()
         .expect("ToasCfg builder error");
     let taos_pool = r2d2::Pool::builder().max_size(16).build(taos_cfg)?;
     let mgr = DatabaseExistsMap::default();
-
+    let state = web::Data::new(AppState {
+        pool: taos_pool.clone(),
+        create_table_lock: Default::default(),
+        mgr: mgr.clone(),
+    });
     let server = HttpServer::new(move || {
         App::new()
-            .data(taos_pool.clone())
-            .data(mgr.clone())
+            //.data(taos_pool.clone())
+            //.data(mgr.clone())
+            //.data(create_table_lock.clone())
+            .app_data(state.clone())
             .wrap(Logger::default())
             .service(prometheus)
     })
-    .bind("0.0.0.0:10230")?
+    .bind(&opts.listen)?
     .run();
 
     server.await?;
