@@ -317,7 +317,7 @@ async fn main() -> Result<()> {
         .port(opts.port)
         .build()
         .expect("ToasCfg builder error");
-    let taos_pool = r2d2::Pool::builder().max_size(16).build(taos_cfg)?;
+    let taos_pool = r2d2::Pool::builder().max_size(1000).build(taos_cfg)?;
     let mgr = DatabaseExistsMap::default();
     let state = web::Data::new(AppState {
         pool: taos_pool.clone(),
