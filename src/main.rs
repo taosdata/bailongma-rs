@@ -207,7 +207,7 @@ async fn write_tdengine_from_prometheus_write_request(
                 })
                 .join(" ")
         })
-        .join("");
+        .join(" ");
     let sql = format!("insert into {}", sql);
 
     if let Err(taos::Error::RawTaosError(err)) = taos.query(&sql) {
