@@ -160,28 +160,7 @@ async fn write_tdengine_from_prometheus_write_request(
     req: &protos::WriteRequest,
 ) -> Result<()> {
     debug!("Write tdengine from prometheus write request");
-    let mgr = &state.mgr;
     let taos = state.pool.get()?;
-
-    // 1. check table exists.
-    let database_exists = {
-        let mgr = mgr.read().unwrap();
-        trace!("manager: {:?}", mgr.deref());
-        mgr.contains_key(database)
-    };
-    if !database_exists {
-        // create database
-        trace!("database does not exist, create it: {}", database);
-        let mut mgr = mgr.write().unwrap();
-        trace!("get write lock");
-        let _ = create_database(&taos, database)?;
-        mgr.insert(database.into(), Default::default());
-        trace!("manager: {:?}", mgr.deref());
-        trace!("database created: {}", database);
-    } else {
-        trace!("database exists");
-    }
-
     // build insert sql
     let sql = req
         .timeseries
@@ -212,6 +191,12 @@ async fn write_tdengine_from_prometheus_write_request(
 
     if let Err(taos::Error::RawTaosError(err)) = taos.query(&sql) {
         match err.code {
+            TaosCode::MnodeDbNotSelected | TaosCode::ClientDbNotSelected => {
+                let _  = state.create_table_lock.lock().unwrap();
+                taos.create_database(database)?;
+                handle_table_schema(&state, database, &req)?;
+                taos.query(&sql)?;
+            }
             TaosCode::ClientInvalidTableName | TaosCode::MnodeInvalidTableName => {
                 let _  = state.create_table_lock.lock().unwrap();
                 handle_table_schema(&state, database, &req)?;
@@ -234,8 +219,6 @@ async fn prometheus(
 ) -> WebResult<HttpResponse> {
     //let _ = create_table_lock.lock();
     let pool = &state.pool;
-    let mgr = &state.mgr;
-    debug!("headers: {:?}", req.headers());
     let bytes = bytes.deref();
     let mut decoder = snap::raw::Decoder::new();
     // println!("decompressing");
@@ -285,11 +268,12 @@ struct Opts {
     password: String,
     #[clap(short = 'L', long, default_value = "0.0.0.0:10203")]
     listen: String,
+    #[clap(short, long, default_value = "10")]
+    workers: usize,
 }
 
 pub struct AppState {
     pool: taos::TaosPool,
-    mgr: DatabaseExistsMap,
     create_table_lock: Mutex<i32>,
 }
 
@@ -317,22 +301,19 @@ async fn main() -> Result<()> {
         .port(opts.port)
         .build()
         .expect("ToasCfg builder error");
-    let taos_pool = r2d2::Pool::builder().max_size(1000).build(taos_cfg)?;
+    let taos_pool = r2d2::Pool::builder().max_size(opts.workers as u32 * 2).build(taos_cfg)?;
     let mgr = DatabaseExistsMap::default();
     let state = web::Data::new(AppState {
         pool: taos_pool.clone(),
         create_table_lock: Default::default(),
-        mgr: mgr.clone(),
     });
     let server = HttpServer::new(move || {
         App::new()
-            //.data(taos_pool.clone())
-            //.data(mgr.clone())
-            //.data(create_table_lock.clone())
             .app_data(state.clone())
             .wrap(Logger::default())
             .service(prometheus)
     })
+    .workers(opts.workers)
     .bind(&opts.listen)?
     .run();
 
