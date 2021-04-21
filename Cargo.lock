@@ -1044,6 +1044,7 @@ dependencies = [
  "derive_builder",
  "env_logger",
  "itertools 0.10.0",
+ "lazy_static",
  "log",
  "num_enum",
  "r2d2",
