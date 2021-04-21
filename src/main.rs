@@ -12,7 +12,7 @@ use actix_web::{
     web::{self, Bytes},
     App, HttpRequest, HttpResponse, HttpServer, Responder, Result as WebResult,
 };
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::Clap;
 use itertools::Itertools;
 use log::*;
@@ -45,7 +45,7 @@ fn table_name_escape(name: &str) -> String {
     }
 }
 
-fn handle_stable_schema<'prom>(
+async fn handle_stable_schema<'prom>(
     state: &web::Data<AppState>,
     database: &str,
     timeseries: &'prom protos::TimeSeries,
@@ -64,9 +64,11 @@ fn handle_stable_schema<'prom>(
     let metrics_name = &name[0].value;
     let stable_name = table_name_escape(metrics_name);
 
-    let mut schema = taos.describe(&format!("{}.{}", database, &stable_name));
+    let mut schema = taos
+        .describe(&format!("{}.{}", database, &stable_name))
+        .await;
     trace!("schema: {:?}", &schema);
-    if let Err(taos::Error::RawTaosError(taos::TaosError { code, err })) = schema {
+    if let Err(taos::Error::RawTaosError(taos::TaosError { code, ref err })) = schema {
         match code {
             taos::TaosCode::MnodeInvalidTableName => {
                 // create super table
@@ -81,23 +83,45 @@ fn handle_stable_schema<'prom>(
                         .join(", ")
                 );
                 trace!("exec sql: {}", &sql);
-                taos.exec(&sql)?;
-                schema = taos.describe(&format!("{}.{}", database, &stable_name));
+                taos.exec(&sql).await?;
+                schema = taos
+                    .describe(&format!("{}.{}", database, &stable_name))
+                    .await;
+            }
+            taos::TaosCode::MnodeDbNotSelected => {
+                // create database
+                let sql = format!("create database {}", database);
+                taos.exec(&sql).await?;
+                // create super table
+                let sql = format!(
+                    "create stable if not exists {}.{} (ts timestamp, value double) tags (taghash binary({}), {})",
+                    database,
+                    stable_name,
+                    34, // taghash length
+                    labels
+                        .iter()
+                        .map(|label| { format!("t_{} binary({})", label.name, 128) })  // TODO: default binary length is 128 
+                        .join(", ")
+                );
+                trace!("exec sql: {}", &sql);
+                taos.exec(&sql).await?;
+                schema = taos
+                    .describe(&format!("{}.{}", database, &stable_name))
+                    .await;
             }
             _ => {
                 error!("error: TaosError {{ code: {}, err: {} }}", code, err);
-                Err(taos::Error::RawTaosError(TaosError { code, err }))?;
+                Err(taos::Error::RawTaosError(TaosError {
+                    code,
+                    err: err.clone(),
+                }))?;
             }
         }
     }
 
     let schema = schema.unwrap();
     use std::iter::FromIterator;
-    let fields = BTreeSet::from_iter(schema.iter().map(|row| {
-        row.first()
-            .expect("first show always exist in describe results")
-            .to_string()
-    }));
+    let fields = BTreeSet::from_iter(schema.names().into_iter());
 
     let mut tagmap = BTreeMap::new();
     for label in &labels {
@@ -107,7 +131,7 @@ fn handle_stable_schema<'prom>(
                 database, stable_name, &label.name, 128
             );
             trace!("add tag {} for stable {}: {}", label.name, stable_name, sql);
-            taos.exec(&sql)?;
+            taos.exec(&sql).await?;
         }
         tagmap.insert(&label.name, &label.value);
     }
@@ -133,18 +157,18 @@ fn handle_stable_schema<'prom>(
     );
     debug!("created table {}.{}", database, table_name);
     trace!("create table with sql: {}", sql);
-    taos.exec(&sql)?;
+    taos.exec(&sql).await?;
     debug!("handle stable done");
     Ok(())
 }
-fn handle_table_schema(
+async fn handle_table_schema(
     state: &web::Data<AppState>,
     database: &str,
     req: &protos::WriteRequest,
 ) -> Result<()> {
     for ts in &req.timeseries {
         // handle stable
-        handle_stable_schema(state, database, ts)?;
+        handle_stable_schema(state, database, ts).await?;
     }
     trace!("handle table schema");
     Ok(())
@@ -184,20 +208,20 @@ async fn write_tdengine_from_prometheus(
         .join(" ");
     let sql = format!("insert into {}", sql);
 
-    if let Err(taos_err) = taos.query(&sql) {
+    if let Err(taos_err) = taos.query(&sql).await {
         if let taos::Error::RawTaosError(err) = &taos_err {
             match err.code {
                 TaosCode::MnodeDbNotSelected | TaosCode::ClientDbNotSelected => {
                     let _ = state.create_table_lock.lock().unwrap();
-                    taos.create_database(database)?;
-                    handle_table_schema(&state, database, &req)?;
-                    taos.query(&sql)?;
+                    taos.create_database(database).await?;
+                    handle_table_schema(&state, database, &req).await?;
+                    taos.query(&sql).await?;
                     return Ok(());
                 }
                 TaosCode::ClientInvalidTableName | TaosCode::MnodeInvalidTableName => {
                     let _ = state.create_table_lock.lock().unwrap();
-                    handle_table_schema(&state, database, &req)?;
-                    taos.query(&sql)?;
+                    handle_table_schema(&state, database, &req).await?;
+                    taos.query(&sql).await?;
                     return Ok(());
                 }
                 code => {
@@ -215,10 +239,11 @@ async fn prometheus(
     //mgr: web::Data<DatabaseExistsMap>,
     //create_table_lock: web::Data<Mutex<i32>>,
     state: web::Data<AppState>,
-    web::Path(database): web::Path<String>,
+    database: web::Path<String>,
     bytes: Bytes,
 ) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
+    let database = database.as_str();
     let mut decoder = snap::raw::Decoder::new();
     let decompressed = decoder.decompress_vec(bytes).expect("decompressingc error");
 
@@ -228,9 +253,8 @@ async fn prometheus(
     //println!("{:?}", write_request);
 
     // write prometheus with 8 retries in case of error
-    for i in 0..8 {
-        let res =
-            write_tdengine_from_prometheus(&state, &database, &write_request).await;
+    for i in 0..8i32 {
+        let res = write_tdengine_from_prometheus(&state, &database, &write_request).await;
         if res.is_ok() {
             return Ok(HttpResponse::Ok().finish());
         } else {
@@ -302,7 +326,6 @@ async fn main() -> Result<()> {
     let taos_pool = r2d2::Pool::builder()
         .max_size(opts.workers as u32 * 2)
         .build(taos_cfg)?;
-    let mgr = DatabaseExistsMap::default();
     let state = web::Data::new(AppState {
         pool: taos_pool.clone(),
         create_table_lock: Default::default(),
