@@ -125,10 +125,10 @@ async fn handle_stable_schema<'prom>(
 
     let mut tagmap = BTreeMap::new();
     for label in &labels {
-        if !fields.contains(&format!("t_{}", &label.name)) {
+        if !fields.contains(&format!("t_{}", label.name.to_lowercase())) {
             let sql = format!(
                 "alter stable {}.{} add tag t_{} binary({})",
-                database, stable_name, &label.name, 128
+                database, stable_name, &label.name.to_lowercase(), 128
             );
             trace!("add tag {} for stable {}: {}", label.name, stable_name, sql);
             taos.exec(&sql).await?;
@@ -148,7 +148,7 @@ async fn handle_stable_schema<'prom>(
         table_name,
         database,
         stable_name,
-        tagmap.keys().map(|v| format!("t_{}", v)).join(","),
+        tagmap.keys().map(|v| format!("t_{}", v.to_lowercase())).join(","),
         taghash,
         tagmap
             .values()
