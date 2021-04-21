@@ -12,7 +12,7 @@ use actix_web::{
     web::{self, Bytes},
     App, HttpRequest, HttpResponse, HttpServer, Responder, Result as WebResult,
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Clap;
 use itertools::Itertools;
 use log::*;
@@ -31,11 +31,6 @@ use utils::*;
 type DatabaseExistsMap = Arc<RwLock<FnvHashMap<String, STableExistsMap>>>;
 type STableExistsMap = RwLock<FnvHashMap<String, TableExistsMap>>;
 type TableExistsMap = RwLock<FnvHashSet<String>>;
-
-fn create_database(taos: &Taos, database: &str) -> Result<()> {
-    taos.query(&format!("create database if not exists {}", database))?;
-    Ok(())
-}
 
 fn table_name_escape(name: &str) -> String {
     let s = name
@@ -154,7 +149,7 @@ fn handle_table_schema(
     trace!("handle table schema");
     Ok(())
 }
-async fn write_tdengine_from_prometheus_write_request(
+async fn write_tdengine_from_prometheus(
     state: &web::Data<AppState>,
     database: &str,
     req: &protos::WriteRequest,
@@ -189,21 +184,28 @@ async fn write_tdengine_from_prometheus_write_request(
         .join(" ");
     let sql = format!("insert into {}", sql);
 
-    if let Err(taos::Error::RawTaosError(err)) = taos.query(&sql) {
-        match err.code {
-            TaosCode::MnodeDbNotSelected | TaosCode::ClientDbNotSelected => {
-                let _  = state.create_table_lock.lock().unwrap();
-                taos.create_database(database)?;
-                handle_table_schema(&state, database, &req)?;
-                taos.query(&sql)?;
+    if let Err(taos_err) = taos.query(&sql) {
+        if let taos::Error::RawTaosError(err) = &taos_err {
+            match err.code {
+                TaosCode::MnodeDbNotSelected | TaosCode::ClientDbNotSelected => {
+                    let _ = state.create_table_lock.lock().unwrap();
+                    taos.create_database(database)?;
+                    handle_table_schema(&state, database, &req)?;
+                    taos.query(&sql)?;
+                    return Ok(());
+                }
+                TaosCode::ClientInvalidTableName | TaosCode::MnodeInvalidTableName => {
+                    let _ = state.create_table_lock.lock().unwrap();
+                    handle_table_schema(&state, database, &req)?;
+                    taos.query(&sql)?;
+                    return Ok(());
+                }
+                code => {
+                    warn!("insert into tdengine error: [{}]{}", code, err);
+                }
             }
-            TaosCode::ClientInvalidTableName | TaosCode::MnodeInvalidTableName => {
-                let _  = state.create_table_lock.lock().unwrap();
-                handle_table_schema(&state, database, &req)?;
-                taos.query(&sql)?;
-            }
-            _ => {}
         }
+        Err(taos_err)?
     }
     Ok(())
 }
@@ -215,35 +217,31 @@ async fn prometheus(
     state: web::Data<AppState>,
     web::Path(database): web::Path<String>,
     bytes: Bytes,
-    req: HttpRequest,
 ) -> WebResult<HttpResponse> {
-    //let _ = create_table_lock.lock();
-    let pool = &state.pool;
     let bytes = bytes.deref();
     let mut decoder = snap::raw::Decoder::new();
-    // println!("decompressing");
     let decompressed = decoder.decompress_vec(bytes).expect("decompressingc error");
 
     let write_request =
         protos::WriteRequest::decode(&mut decompressed.as_ref()).expect("deserialzied ok");
 
-    let conn = pool.get().expect("couldn't get db connection from pool");
-
     //println!("{:?}", write_request);
 
     // write prometheus with 8 retries in case of error
-    for _ in 0..8 {
+    for i in 0..8 {
         let res =
-            write_tdengine_from_prometheus_write_request(&state, &database, &write_request).await;
+            write_tdengine_from_prometheus(&state, &database, &write_request).await;
         if res.is_ok() {
             return Ok(HttpResponse::Ok().finish());
+        } else {
+            error!("error in {} retry: {:?}", i, res);
         }
     }
 
     // if not success, write data and save it to persistent storage.
-
+    error!("failed with retries, the data will be lost");
     // body is loaded, now we can deserialize
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::NoContent().finish())
 }
 
 /// TDengine adapter for prometheus.
@@ -301,7 +299,9 @@ async fn main() -> Result<()> {
         .port(opts.port)
         .build()
         .expect("ToasCfg builder error");
-    let taos_pool = r2d2::Pool::builder().max_size(opts.workers as u32 * 2).build(taos_cfg)?;
+    let taos_pool = r2d2::Pool::builder()
+        .max_size(opts.workers as u32 * 2)
+        .build(taos_cfg)?;
     let mgr = DatabaseExistsMap::default();
     let state = web::Data::new(AppState {
         pool: taos_pool.clone(),
