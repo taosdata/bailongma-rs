@@ -6,6 +6,9 @@ use std::{
 
 use std::path::PathBuf;
 
+use std::future::Future;
+use futures_util::stream::StreamExt;
+
 use actix_web::{
     middleware::Logger,
     post,
@@ -32,6 +35,7 @@ fn table_name_escape(name: &str) -> String {
         .replace(":", "_")
         .replace(".", "_")
         .replace("-", "_")
+        .replace(" ", "_")
         .to_lowercase();
     if s.len() > 190 {
         s.split_at(190).0.to_string()
@@ -39,7 +43,13 @@ fn table_name_escape(name: &str) -> String {
         s
     }
 }
-
+fn tag_name_escape(name: &str) -> String {
+    name
+        .replace(":", "_")
+        .replace(".", "_")
+        .replace("-", "_")
+        .to_lowercase()
+}
 async fn handle_stable_schema<'prom>(
     state: &web::Data<AppState>,
     database: &str,
@@ -76,7 +86,7 @@ async fn handle_stable_schema<'prom>(
                     34, // taghash length
                     labels
                         .iter()
-                        .map(|label| { format!("t_{} binary({})", label.name.to_lowercase(), 128) })  // TODO: default binary length is 128 
+                        .map(|label| { format!("t_{} binary({})", tag_name_escape(&label.name), 128) })  // TODO: default binary length is 128 
                         .join(", ")
                 );
                 trace!("exec sql: {}", &sql);
@@ -97,7 +107,7 @@ async fn handle_stable_schema<'prom>(
                     34, // taghash length
                     labels
                         .iter()
-                        .map(|label| { format!("t_{} binary({})", label.name.to_lowercase(), 128) })  // TODO: default binary length is 128 
+                        .map(|label| { format!("t_{} binary({})", tag_name_escape(&label.name), 128) })  // TODO: default binary length is 128 
                         .join(", ")
                 );
                 trace!("exec sql: {}", &sql);
@@ -122,12 +132,12 @@ async fn handle_stable_schema<'prom>(
 
     let mut tagmap = BTreeMap::new();
     for label in &labels {
-        if !fields.contains(&format!("t_{}", label.name.to_lowercase())) {
+        if !fields.contains(&format!("t_{}", tag_name_escape(&label.name))) {
             let sql = format!(
                 "alter stable {}.{} add tag t_{} binary({})",
                 database,
                 stable_name,
-                &label.name.to_lowercase(),
+                tag_name_escape(&label.name),
                 128
             );
             trace!("add tag {} for stable {}: {}", label.name, stable_name, sql);
@@ -151,7 +161,7 @@ async fn handle_stable_schema<'prom>(
         stable_name,
         tagmap
             .keys()
-            .map(|v| format!("t_{}", v.to_lowercase()))
+            .map(|v| format!("t_{}", tag_name_escape(&v)))
             .join(","),
         taghash,
         tagmap
