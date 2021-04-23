@@ -2,11 +2,12 @@ use std::{sync::Arc, vec};
 
 use bailongma::*;
 
-use log::{trace, error};
 use clap::Clap;
 use itertools::Itertools;
+use log::{error, trace};
 use names::{Generator, Name};
 use tokio;
+use rayon::prelude::*;
 
 /// TDengine adapter for prometheus.
 #[derive(Debug, Clone, Clap)]
@@ -30,19 +31,19 @@ struct Opts {
     /// Write request batch size of timeseries data
     #[clap(long, default_value = "500")]
     chunks: usize,
-    /// Time interval for each prom write request, unit: s
-    #[clap(long, default_value = "1")]
-    interval: usize,
+    /// Time interval for each prom write request, unit: ms
+    #[clap(long, default_value = "1000")]
+    interval: u32,
     /// Threads
     #[clap(long, default_value = "8")]
     threads: usize,
     /// Samples per point
     #[clap(long, default_value = "100")]
-    samples: usize,
+    samples: u32,
 }
 
 fn random_names(len: usize) -> Vec<String> {
-    let mut generator = Generator::with_naming(Name::Numbered);
+    let generator = Generator::with_naming(Name::Numbered);
     generator.take(len).collect()
 }
 
@@ -63,6 +64,7 @@ struct PromGenerator {
     endpoint: String,
     timestamp: i64,
     chunks: usize,
+    interval: u32,
     metrics: Arc<Vec<String>>,
     labels: Arc<Vec<String>>,
     points: Arc<Vec<String>>,
@@ -70,6 +72,7 @@ struct PromGenerator {
 
 impl PromGenerator {
     fn build_timeseries(&self, rt: &tokio::runtime::Runtime, ts_offset: i64) {
+        let interval = self.interval;
         let sample = Sample {
             value: ts_offset as _,
             timestamp: self.timestamp + ts_offset,
@@ -124,21 +127,32 @@ impl PromGenerator {
                     .compress_vec(&bytes)
                     .expect("snappy compress error")
             })
+            .collect_vec()
+            .into_par_iter()
             .for_each(|data| {
                 use tempfile::NamedTempFile;
                 std::fs::write("test.prom", &data).expect("write to file");
                 let url = self.endpoint.clone();
                 trace!("datalen: {}", data.len());
-                rt.spawn_blocking(move || {
+                //rt.spawn_blocking(move || {
                     let mut file = NamedTempFile::new_in("/dev/shm").unwrap();
                     use std::io::prelude::*;
-                    file.as_file_mut().write_all(&data).expect("create file in /dev/shm");
+                    file.as_file_mut()
+                        .write_all(&data)
+                        .expect("create file in /dev/shm");
                     let path = file.path();
-                    let status = std::process::Command::new("curl").args(&["-X", "POST"]).arg("--data-binary").arg(&format!("@{}", path.display())).arg(url).status().expect("run command error");
+                    let status = std::process::Command::new("curl")
+                        .args(&["-X", "POST"])
+                        .arg("--data-binary")
+                        .arg(&format!("@{}", path.display()))
+                        .arg(url)
+                        .status()
+                        .expect("run command error");
                     if !status.success() {
                         error!("post data error");
                     }
-                });
+                    std::thread::sleep(std::time::Duration::from_millis(interval as _));
+                // });
             });
     }
 }
@@ -167,10 +181,13 @@ fn main() {
         endpoint: opts.endpoint.clone(),
         timestamp,
         chunks: opts.chunks,
+        interval: opts.interval,
         metrics,
         labels,
         points,
     };
-    
-    prom_g.build_timeseries(&rt, 0);
+
+    for i in 0..opts.samples {
+        prom_g.build_timeseries(&rt, i as _);
+    }
 }

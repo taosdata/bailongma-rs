@@ -2,13 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,
     sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 
-use std::path::PathBuf;
-
-use std::future::Future;
-use futures_util::stream::StreamExt;
-
+use actix::{Arbiter};
 use actix_web::{
     middleware::Logger,
     post,
@@ -17,6 +14,7 @@ use actix_web::{
 };
 use anyhow::{bail, Result};
 use clap::Clap;
+use futures::stream::{Stream, StreamExt};
 use itertools::Itertools;
 use log::*;
 use prost::Message;
@@ -44,19 +42,18 @@ fn table_name_escape(name: &str) -> String {
     }
 }
 fn tag_name_escape(name: &str) -> String {
-    name
-        .replace(":", "_")
+    name.replace(":", "_")
         .replace(".", "_")
         .replace("-", "_")
         .to_lowercase()
 }
 async fn handle_stable_schema<'prom>(
     state: &web::Data<AppState>,
+    taos: &Taos,
     database: &str,
     timeseries: &'prom protos::TimeSeries,
 ) -> Result<()> {
     debug!("handle stable start");
-    let taos = state.pool.get()?;
     let (name, labels): (_, Vec<_>) = timeseries
         .labels
         .iter()
@@ -177,12 +174,13 @@ async fn handle_stable_schema<'prom>(
 }
 async fn handle_table_schema(
     state: &web::Data<AppState>,
+    taos: &Taos,
     database: &str,
     req: &protos::WriteRequest,
 ) -> Result<()> {
     for ts in &req.timeseries {
         // handle stable
-        handle_stable_schema(state, database, ts).await?;
+        handle_stable_schema(state, taos, database, ts).await?;
     }
     debug!("handle table schema done");
     Ok(())
@@ -194,8 +192,9 @@ async fn write_tdengine_from_prometheus(
 ) -> Result<()> {
     debug!("Write tdengine from prometheus write request");
     let taos = state.pool.get()?;
+    let taos = taos.deref();
     // build insert sql
-    let sql_iter = req
+    let chunks = req
         .timeseries
         .iter()
         .map(|ts| {
@@ -217,11 +216,13 @@ async fn write_tdengine_from_prometheus(
             })
         })
         .flatten()
-        .chunks(state.opts.chunk_size);
+        .chunks(state.opts.chunk_size)
+        .into_iter()
+        .map(|mut chunk| chunk.join(""))
+        .collect_vec();
 
-    for mut chunk in sql_iter.into_iter() {
-        let sql = chunk.join("");
-        let sql = format!("insert into {}", sql);
+    for chunk in chunks {
+        let sql = format!("insert into {}", chunk);
         debug!("chunk sql length is {}", sql.len());
 
         if let Err(err) = taos.query(&sql).await {
@@ -231,9 +232,8 @@ async fn write_tdengine_from_prometheus(
                     | TaosCode::ClientDbNotSelected
                     | TaosCode::ClientInvalidTableName
                     | TaosCode::MnodeInvalidTableName => {
-                        handle_table_schema(&state, database, &req).await?;
+                        handle_table_schema(&state, taos, database, &req).await?;
                         taos.query(&sql).await?;
-                        return Ok(());
                     }
                     code => {
                         warn!("insert into tdengine error: [{}]{}", code, err);
@@ -242,9 +242,66 @@ async fn write_tdengine_from_prometheus(
             } else {
                 error!("error with query [{}] : {}", sql.len(), err);
             }
-            Err(err)?
         }
     }
+
+    // while let Some(chunk) = chunks.next().await {
+
+    // }
+
+    // while let Some() {
+    //     let sql = chunk.join("");
+    //     let sql = format!("insert into {}", sql);
+    //     debug!("chunk sql length is {}", sql.len());
+
+    //     if let Err(err) = taos.query(&sql).await {
+    //         if let taos::Error::RawTaosError(err) = &err {
+    //             match err.code {
+    //                 TaosCode::MnodeDbNotSelected
+    //                 | TaosCode::ClientDbNotSelected
+    //                 | TaosCode::ClientInvalidTableName
+    //                 | TaosCode::MnodeInvalidTableName => {
+    //                     handle_table_schema(&state, database, &req).await?;
+    //                     taos.query(&sql).await?;
+    //                     return Ok(());
+    //                 }
+    //                 code => {
+    //                     warn!("insert into tdengine error: [{}]{}", code, err);
+    //                 }
+    //             }
+    //         } else {
+    //             error!("error with query [{}] : {}", sql.len(), err);
+    //         }
+    //         Err(err)?
+    //     }
+    // }
+
+    // for mut chunk in iter {
+    //     let sql = chunk.join("");
+    //     let sql = format!("insert into {}", sql);
+    //     debug!("chunk sql length is {}", sql.len());
+
+    //     if let Err(err) = taos.query(&sql).await {
+    //         if let taos::Error::RawTaosError(err) = &err {
+    //             match err.code {
+    //                 TaosCode::MnodeDbNotSelected
+    //                 | TaosCode::ClientDbNotSelected
+    //                 | TaosCode::ClientInvalidTableName
+    //                 | TaosCode::MnodeInvalidTableName => {
+    //                     handle_table_schema(&state, database, &req).await?;
+    //                     taos.query(&sql).await?;
+    //                     return Ok(());
+    //                 }
+    //                 code => {
+    //                     warn!("insert into tdengine error: [{}]{}", code, err);
+    //                 }
+    //             }
+    //         } else {
+    //             error!("error with query [{}] : {}", sql.len(), err);
+    //         }
+    //         Err(err)?
+    //     }
+    // }
 
     Ok(())
 }
@@ -265,17 +322,20 @@ async fn prometheus(
     //println!("{:?}", write_request);
 
     // write prometheus with 8 retries in case of error
-    for i in 0..8i32 {
-        let res = write_tdengine_from_prometheus(&state, &database, &write_request).await;
-        if res.is_ok() {
-            return Ok(HttpResponse::Ok().finish());
-        } else {
-            error!("error in {} retry: {:?}", i, res);
+    let database = database.to_string();
+    tokio::spawn(async move {
+        for i in 0..8i32 {
+            let res = write_tdengine_from_prometheus(&state, &database, &write_request).await;
+            if let Err(err) = res {
+                error!("error in {} retry: {}", i, err.backtrace());
+            } else {
+                return;
+            }
         }
-    }
 
-    // if not success, write data and save it to persistent storage.
-    error!("failed with retries, the data will be lost");
+        // if not success, write data and save it to persistent storage.
+        error!("failed with retries, the data will be lost");
+    });
     // body is loaded, now we can deserialize
     Ok(HttpResponse::NoContent().finish())
 }
@@ -340,7 +400,11 @@ async fn main() -> Result<()> {
         .build()
         .expect("ToasCfg builder error");
     let taos_pool = r2d2::Pool::builder()
-        .max_size(opts.workers as u32 * 2)
+        .max_size(1600)
+        .test_on_check_out(false)
+        .connection_timeout(Duration::from_secs(500))
+        .max_lifetime(Some(Duration::from_secs(600)))
+        .idle_timeout(Some(Duration::from_secs(300)))
         .build(taos_cfg)?;
     let workers = opts.workers;
     let listen = opts.listen.clone();

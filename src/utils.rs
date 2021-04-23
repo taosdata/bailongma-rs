@@ -1,5 +1,5 @@
 pub fn md5sum(bytes: &[u8]) -> String {
-    use md5::{Md5, Digest};
+    use md5::{Digest, Md5};
     let mut hasher = Md5::new();
     hasher.update(bytes);
     let result = hasher.finalize();
@@ -14,8 +14,8 @@ pub fn taos_hash_id(bytes: &[u8]) -> i32 {
 }
 #[test]
 fn test_md5hash() {
-    use md5::{Md5, Digest};
     use hex_literal::hex;
+    use md5::{Digest, Md5};
     let mut hasher = Md5::new();
     hasher.update(b"abc");
     let result = hasher.finalize();
