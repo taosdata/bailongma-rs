@@ -80,5 +80,10 @@ The url endpoint is `/adapters/prometheus/{database}`. It will automatically cre
 `cargo build` will also produce a benchmark tool for memory tracking.
 
 ```sh
-blm-bench-prom http://127.0.0.1:10230/adapters/prometheus/test5 --points 10 --metrics 10 --interval 1000 --chunks 1000 --samples 1
+blm-bench-prom http://127.0.0.1:10230/adapters/prometheus/test5 \
+  --points 10 \
+  --metrics 10 \
+  --interval 1000 \
+  --chunks 1000 \
+  --samples 100
 ```
