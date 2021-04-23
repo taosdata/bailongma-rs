@@ -17,7 +17,7 @@ use itertools::Itertools;
 use log::*;
 use prost::Message;
 
-use libtdengine::{self as taos, Taos, TaosCfg, TaosCfgBuilder, TaosCode, TaosPool};
+use libtaos::{self as taos, Taos, TaosCfg, TaosCfgBuilder, TaosCode, TaosPool};
 
 use fnv::{FnvHashMap, FnvHashSet};
 pub mod protos;
