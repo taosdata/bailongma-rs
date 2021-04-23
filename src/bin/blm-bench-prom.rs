@@ -37,7 +37,7 @@ struct Opts {
     /// Threads
     #[clap(long, default_value = "8")]
     threads: usize,
-    /// Samples per point
+    /// Samples per point, so the stable rows is points * samples
     #[clap(long, default_value = "100")]
     samples: u32,
 }

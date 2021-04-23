@@ -5,16 +5,14 @@ use std::{
     time::Duration,
 };
 
-use actix::{Arbiter};
 use actix_web::{
     middleware::Logger,
     post,
     web::{self, Bytes},
     App, HttpRequest, HttpResponse, HttpServer, Responder, Result as WebResult,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result};
 use clap::Clap;
-use futures::stream::{Stream, StreamExt};
 use itertools::Itertools;
 use log::*;
 use prost::Message;
@@ -360,12 +358,23 @@ struct Opts {
     /// TDengine password
     #[clap(short = 'P', long, default_value = "taosdata")]
     password: String,
+    /// Listen to an specific ip and port
     #[clap(short = 'L', long, default_value = "0.0.0.0:10203")]
     listen: String,
+    /// Thread works for web request
     #[clap(short, long, default_value = "10")]
     workers: usize,
-    #[clap(short, long, default_value = "200")]
+    /// Sql chunk size.
+    ///
+    /// The larger your table column size is, the small chunk should be setted.
+    #[clap(short, long, default_value = "600")]
     chunk_size: usize,
+    /// Max TDengine connections
+    ///
+    ///   - in concurrent cases, use max as 50000
+    ///   - for common use, set it as 5000
+    #[clap(short, long, default_value = "50000")]
+    max_connections: usize
 }
 
 #[derive(Debug)]
