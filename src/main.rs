@@ -336,7 +336,7 @@ async fn prometheus(
         error!("failed with retries, the data will be lost");
     });
     // body is loaded, now we can deserialize
-    Ok(HttpResponse::NoContent().finish())
+    Ok(HttpResponse::Accepted().finish())
 }
 
 /// TDengine adapter for prometheus.
