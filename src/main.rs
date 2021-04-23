@@ -147,7 +147,7 @@ async fn handle_stable_schema<'prom>(
     let taghash = md5sum(tagmap.values().join("").as_bytes());
 
     // create sub table;
-
+    // FIXME: It's better to keep a table exist set.
     let sql = format!(
         "create table if not exists {}.{} using {}.{} (taghash,{}) tags(\"{}\",{})",
         database,
