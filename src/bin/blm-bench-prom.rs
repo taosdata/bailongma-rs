@@ -6,8 +6,8 @@ use clap::Clap;
 use itertools::Itertools;
 use log::{error, trace};
 use names::{Generator, Name};
-use tokio;
 use rayon::prelude::*;
+use tokio;
 
 /// TDengine adapter for prometheus.
 #[derive(Debug, Clone, Clap)]
@@ -135,23 +135,23 @@ impl PromGenerator {
                 let url = self.endpoint.clone();
                 trace!("datalen: {}", data.len());
                 //rt.spawn_blocking(move || {
-                    let mut file = NamedTempFile::new_in("/dev/shm").unwrap();
-                    use std::io::prelude::*;
-                    file.as_file_mut()
-                        .write_all(&data)
-                        .expect("create file in /dev/shm");
-                    let path = file.path();
-                    let status = std::process::Command::new("curl")
-                        .args(&["-X", "POST"])
-                        .arg("--data-binary")
-                        .arg(&format!("@{}", path.display()))
-                        .arg(url)
-                        .status()
-                        .expect("run command error");
-                    if !status.success() {
-                        error!("post data error");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(interval as _));
+                let mut file = NamedTempFile::new_in("/dev/shm").unwrap();
+                use std::io::prelude::*;
+                file.as_file_mut()
+                    .write_all(&data)
+                    .expect("create file in /dev/shm");
+                let path = file.path();
+                let status = std::process::Command::new("curl")
+                    .args(&["-X", "POST"])
+                    .arg("--data-binary")
+                    .arg(&format!("@{}", path.display()))
+                    .arg(url)
+                    .status()
+                    .expect("run command error");
+                if !status.success() {
+                    error!("post data error");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(interval as _));
                 // });
             });
     }

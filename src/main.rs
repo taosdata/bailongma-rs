@@ -11,7 +11,7 @@ use actix_web::{
     web::{self, Bytes},
     App, HttpRequest, HttpResponse, HttpServer, Responder, Result as WebResult,
 };
-use anyhow::{Result};
+use anyhow::Result;
 use clap::Clap;
 use itertools::Itertools;
 use log::*;
@@ -224,8 +224,8 @@ async fn write_tdengine_from_prometheus(
         debug!("chunk sql length is {}", sql.len());
 
         if let Err(err) = taos.query(&sql).await {
-            if let taos::Error::RawTaosError(err) = &err {
-                match err.code {
+            match err {
+                taos::Error::RawTaosError(err) => match err.code {
                     TaosCode::MnodeDbNotSelected
                     | TaosCode::ClientDbNotSelected
                     | TaosCode::ClientInvalidTableName
@@ -236,9 +236,10 @@ async fn write_tdengine_from_prometheus(
                     code => {
                         warn!("insert into tdengine error: [{}]{}", code, err);
                     }
+                },
+                err => {
+                    error!("error with query [{}]: {}", sql.len(), err);
                 }
-            } else {
-                error!("error with query [{}] : {}", sql.len(), err);
             }
         }
     }
@@ -374,7 +375,7 @@ struct Opts {
     ///   - in concurrent cases, use max as 50000
     ///   - for common use, set it as 5000
     #[clap(short, long, default_value = "50000")]
-    max_connections: usize
+    max_connections: u32,
 }
 
 #[derive(Debug)]
@@ -409,7 +410,7 @@ async fn main() -> Result<()> {
         .build()
         .expect("ToasCfg builder error");
     let taos_pool = r2d2::Pool::builder()
-        .max_size(1600)
+        .max_size(opts.max_connections)
         .test_on_check_out(false)
         .connection_timeout(Duration::from_secs(500))
         .max_lifetime(Some(Duration::from_secs(600)))
