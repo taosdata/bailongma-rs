@@ -309,6 +309,7 @@ async fn prometheus(
     state: web::Data<AppState>,
     database: web::Path<String>,
     bytes: Bytes,
+    arbiter:web::Data<actix::Arbiter>
 ) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
     let database = database.as_str();
@@ -322,11 +323,11 @@ async fn prometheus(
 
     // write prometheus with 8 retries in case of error
     let database = database.to_string();
-    tokio::spawn(async move {
+    arbiter.spawn(async move {
         for i in 0..8i32 {
             let res = write_tdengine_from_prometheus(&state, &database, &write_request).await;
             if let Err(err) = res {
-                error!("error in {} retry: {}", i, err.backtrace());
+                error!("error in {} retry: {}\nbacktraces: {}", i, err, err.backtrace());
             } else {
                 return;
             }
@@ -427,6 +428,7 @@ async fn main() -> Result<()> {
         App::new()
             .app_data(state.clone())
             .wrap(Logger::default())
+            .data(actix::Arbiter::new())
             .service(prometheus)
     })
     .workers(workers)
