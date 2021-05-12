@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use actix::{Addr, SyncArbiter};
 use actix_web::{
     middleware::Logger,
     post,
@@ -13,18 +14,21 @@ use actix_web::{
 };
 use anyhow::Result;
 use clap::Clap;
-use itertools::Itertools;
+use dashmap::{DashMap, DashSet};
+
+use futures::TryStreamExt;
 use log::*;
 use prost::Message;
 
 use libtaos::{self as taos, Taos, TaosCfg, TaosCfgBuilder, TaosCode, TaosPool};
 
-use fnv::{FnvHashMap, FnvHashSet};
-pub mod protos;
+// pub mod protos;
 pub mod utils;
 
+use bailongma::*;
 use taos::TaosError;
 use utils::*;
+
 //use protos::WriteRequest;
 fn table_name_escape(name: &str) -> String {
     let s = name
@@ -46,11 +50,12 @@ fn tag_name_escape(name: &str) -> String {
         .to_lowercase()
 }
 async fn handle_stable_schema<'prom>(
-    state: &web::Data<AppState>,
+    state: &AppState,
     taos: &Taos,
     database: &str,
-    timeseries: &'prom protos::TimeSeries,
+    timeseries: &'prom TimeSeries,
 ) -> Result<()> {
+    use itertools::Itertools;
     debug!("handle stable start");
     let (name, labels): (_, Vec<_>) = timeseries
         .labels
@@ -68,11 +73,11 @@ async fn handle_stable_schema<'prom>(
         .describe(&format!("{}.{}", database, &stable_name))
         .await;
     trace!("schema: {:?}", &schema);
-    let _ = state.create_table_lock.lock().unwrap();
+    //let _ = state.create_table_lock.lock().unwrap();
     if let Err(taos::Error::RawTaosError(taos::TaosError { code, ref err })) = schema {
-        let _ = state.create_table_lock.lock().unwrap();
+        //let _ = state.create_table_lock.lock().unwrap();
         match code {
-            taos::TaosCode::MnodeInvalidTableName => {
+            taos::TaosCode::MndInvalidTableName => {
                 // create super table
                 let sql = format!(
                     "create stable if not exists {}.{} (ts timestamp, value double) tags (taghash binary({}), {})",
@@ -90,9 +95,9 @@ async fn handle_stable_schema<'prom>(
                     .describe(&format!("{}.{}", database, &stable_name))
                     .await;
             }
-            taos::TaosCode::MnodeDbNotSelected => {
+            taos::TaosCode::MndDbNotSelected => {
                 // create database
-                let sql = format!("create database {}", database);
+                let sql = format!("create database if not exists {}", database);
                 dbg!(taos.exec(&sql).await?);
                 // create super table
                 let sql = format!(
@@ -136,7 +141,18 @@ async fn handle_stable_schema<'prom>(
                 128
             );
             trace!("add tag {} for stable {}: {}", label.name, stable_name, sql);
-            taos.exec(&sql).await?;
+            let res = taos.exec(&sql).await;
+            if let Err(err) = res {
+                match &err {
+                    taos::Error::RawTaosError(TaosError { code, err }) => match code {
+                        TaosCode::MndFieldAlreayExist => {}
+                        _ => {
+                            anyhow::bail!(err.clone());
+                        }
+                    },
+                    _ => {}
+                }
+            }
         }
         tagmap.insert(&label.name, &label.value);
     }
@@ -161,7 +177,11 @@ async fn handle_stable_schema<'prom>(
         taghash,
         tagmap
             .values()
-            .map(|value| format!("\"{}\"", value))
+            .map(|value| if value.len() < 127 {
+                format!("\"{}\"", &value)
+            } else {
+                format!("\"{}\"", &value[0..127])
+            })
             .join(",")
     );
     debug!("created table {}.{}", database, table_name);
@@ -171,23 +191,36 @@ async fn handle_stable_schema<'prom>(
     Ok(())
 }
 async fn handle_table_schema(
-    state: &web::Data<AppState>,
+    state: &AppState,
     taos: &Taos,
     database: &str,
-    req: &protos::WriteRequest,
+    req: &WriteRequest,
 ) -> Result<()> {
-    for ts in &req.timeseries {
-        // handle stable
-        handle_stable_schema(state, taos, database, ts).await?;
+    use futures::stream::{self, iter, StreamExt, TryStream, TryStreamExt};
+    let stream = iter(req.timeseries.iter());
+    let res = stream.then(| ts| async move {
+        handle_stable_schema(state, taos, database, ts).await
+    }).collect::<Vec<_>>().await;
+    for i in res {
+        let _ = i?;
     }
+    // let stream = iter(req.timeseries.iter().map(|ts| {
+        // handle_stable_schema(state, taos, database, ts)
+    // }));
+    // let vec: Vec<_> = TryStreamExt::try_collect(stream).await;
+    // for ts in &req.timeseries {
+    //     // handle stable
+    //     handle_stable_schema(state, taos, database, ts).await?;
+    // }
     debug!("handle table schema done");
     Ok(())
 }
 async fn write_tdengine_from_prometheus(
-    state: &web::Data<AppState>,
+    state: &AppState,
     database: &str,
-    req: &protos::WriteRequest,
+    req: &WriteRequest,
 ) -> Result<()> {
+    use itertools::Itertools;
     debug!("Write tdengine from prometheus write request");
     let taos = state.pool.get()?;
     let taos = taos.deref();
@@ -206,11 +239,12 @@ async fn write_tdengine_from_prometheus(
             let tag_values = labels.iter().map(|label| &label.value).join("");
             let table_name = format!("{}{}", metrics_name, tag_values);
             let table_name = format!("{}.md5_{}", database, md5sum(table_name.as_bytes()));
-            ts.samples.iter().map(move |sample| {
-                format!(
-                    " {} values ({}, {})",
-                    table_name, sample.timestamp, sample.value
-                )
+            ts.samples.iter().map(move |sample| match sample.value {
+                Some(value) if value.is_nan() => {
+                    format!(" {} values ({}, NULL)", table_name, sample.timestamp)
+                }
+                None => format!(" {} values ({}, NULL)", table_name, sample.timestamp),
+                Some(value) => format!(" {} values ({}, {})", table_name, sample.timestamp, value),
             })
         })
         .flatten()
@@ -226,10 +260,7 @@ async fn write_tdengine_from_prometheus(
         if let Err(err) = taos.query(&sql).await {
             match err {
                 taos::Error::RawTaosError(err) => match err.code {
-                    TaosCode::MnodeDbNotSelected
-                    | TaosCode::ClientDbNotSelected
-                    | TaosCode::ClientInvalidTableName
-                    | TaosCode::MnodeInvalidTableName => {
+                    TaosCode::MndDbNotSelected | TaosCode::MndInvalidTableName => {
                         handle_table_schema(&state, taos, database, &req).await?;
                         taos.query(&sql).await?;
                     }
@@ -244,100 +275,88 @@ async fn write_tdengine_from_prometheus(
         }
     }
 
-    // while let Some(chunk) = chunks.next().await {
-
-    // }
-
-    // while let Some() {
-    //     let sql = chunk.join("");
-    //     let sql = format!("insert into {}", sql);
-    //     debug!("chunk sql length is {}", sql.len());
-
-    //     if let Err(err) = taos.query(&sql).await {
-    //         if let taos::Error::RawTaosError(err) = &err {
-    //             match err.code {
-    //                 TaosCode::MnodeDbNotSelected
-    //                 | TaosCode::ClientDbNotSelected
-    //                 | TaosCode::ClientInvalidTableName
-    //                 | TaosCode::MnodeInvalidTableName => {
-    //                     handle_table_schema(&state, database, &req).await?;
-    //                     taos.query(&sql).await?;
-    //                     return Ok(());
-    //                 }
-    //                 code => {
-    //                     warn!("insert into tdengine error: [{}]{}", code, err);
-    //                 }
-    //             }
-    //         } else {
-    //             error!("error with query [{}] : {}", sql.len(), err);
-    //         }
-    //         Err(err)?
-    //     }
-    // }
-
-    // for mut chunk in iter {
-    //     let sql = chunk.join("");
-    //     let sql = format!("insert into {}", sql);
-    //     debug!("chunk sql length is {}", sql.len());
-
-    //     if let Err(err) = taos.query(&sql).await {
-    //         if let taos::Error::RawTaosError(err) = &err {
-    //             match err.code {
-    //                 TaosCode::MnodeDbNotSelected
-    //                 | TaosCode::ClientDbNotSelected
-    //                 | TaosCode::ClientInvalidTableName
-    //                 | TaosCode::MnodeInvalidTableName => {
-    //                     handle_table_schema(&state, database, &req).await?;
-    //                     taos.query(&sql).await?;
-    //                     return Ok(());
-    //                 }
-    //                 code => {
-    //                     warn!("insert into tdengine error: [{}]{}", code, err);
-    //                 }
-    //             }
-    //         } else {
-    //             error!("error with query [{}] : {}", sql.len(), err);
-    //         }
-    //         Err(err)?
-    //     }
-    // }
-
     Ok(())
 }
+
 #[post("/adapters/prometheus/{database}")]
 async fn prometheus(
-    state: web::Data<AppState>,
+    state: web::Data<Arc<AppState>>,
     database: web::Path<String>,
     bytes: Bytes,
-    arbiter:web::Data<actix::Arbiter>
 ) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
-    let database = database.as_str();
-    let mut decoder = snap::raw::Decoder::new();
-    let decompressed = decoder.decompress_vec(bytes).expect("decompressingc error");
 
-    let write_request =
-        protos::WriteRequest::decode(&mut decompressed.as_ref()).expect("deserialzied ok");
+    info!("recieved {} bytes from prometheus", bytes.len());
+    // let mut seconds = 0;
+    // loop {
+    //     use sysinfo::{ProcessExt, SystemExt};
+    //     let sys = sysinfo::System::new_all();
+    //     let used = sys.get_used_memory();
+    //     let total = sys.get_total_memory();
+    //     let ps = sys.get_process(std::process::id() as _).unwrap();
+    //     let ps_mem = ps.memory();
+    //     info!(
+    //         "MEMORY: {} in process, {}/{} used/total({:.2}%)",
+    //         ps_mem,
+    //         used,
+    //         total,
+    //         used as f32 / total as f32 * 100.
+    //     );
+
+    //     if ps_mem > state.max_memory {
+    //         warn!("reached max memory limit: {}/{}", ps_mem, state.max_memory);
+    //         tokio::time::sleep(Duration::from_secs(1)).await;
+    //         seconds += 1;
+    //         if seconds > 60 {
+    //             break;
+    //         }
+    //         // return Err(PrometheusRemoteWriteError::MemoryLimit(ps_mem, state.max_memory));
+    //         //return Ok(HttpResponse::InternalServerError().body("reached max memory limit"));
+    //     } else {
+    //         break;
+    //     }
+    // }
+
+    let database = database.as_str();
+    let database = database.to_string();
+
+    let mut decoder = snap::raw::Decoder::new();
+    let decompressed = decoder
+        .decompress_vec(bytes)
+        .map_err(|_| actix_web::error::ErrorNotAcceptable("bad snappy stream"))?;
+
+    let write_request = WriteRequest::decode(&mut decompressed.as_ref()).map_err(|_| {
+        actix_web::error::ErrorNotAcceptable("bad prometheus write request: deserializing error")
+    })?;
+    drop(decompressed); // drop decompressed data, it'll not be used after
 
     //println!("{:?}", write_request);
 
     // write prometheus with 8 retries in case of error
-    let database = database.to_string();
-    arbiter.spawn(async move {
-        for i in 0..8i32 {
-            let res = write_tdengine_from_prometheus(&state, &database, &write_request).await;
-            if let Err(err) = res {
-                error!("error in {} retry: {}\nbacktraces: {}", i, err, err.backtrace());
-            } else {
-                return;
-            }
-        }
+    // arbiter.spawn(async move {
 
-        // if not success, write data and save it to persistent storage.
-        error!("failed with retries, the data will be lost");
-    });
+    // write tdengine, retry max 10 times if error.
+    for _i in 0..10i32 {
+        let res = write_tdengine_from_prometheus(&state, &database, &write_request).await;
+        if let Err(err) = res {
+            warn!(
+                "write tdengine error : {}\nbacktraces: {}",
+                // i,
+                err,
+                err.backtrace()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        } else {
+            return Ok(HttpResponse::Ok().finish());
+        }
+    }
+
+    // if not success, write data and save it to persistent storage.
+    error!("failed with retries, the data will be lost");
+    std::fs::write(format!("prom-failed-{}.snappy", md5sum(bytes)), bytes)?;
+    // });
     // body is loaded, now we can deserialize
-    Ok(HttpResponse::Accepted().finish())
+    Ok(HttpResponse::InternalServerError().finish())
 }
 
 /// TDengine adapter for prometheus.
@@ -375,15 +394,56 @@ struct Opts {
     ///
     ///   - in concurrent cases, use max as 50000
     ///   - for common use, set it as 5000
-    #[clap(short, long, default_value = "50000")]
+    #[clap(short = 'C', long, default_value = "50000")]
     max_connections: u32,
+    /// Max memroy, unit: GB
+    #[clap(short = 'M', long, default_value = "50")]
+    max_memory: u64,
 }
 
+#[derive(Debug, Default)]
+pub struct Tables(DashSet<String>);
+
+impl Tables {
+    pub fn exist(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+    pub fn add_table(&mut self, name: impl Into<String>) {
+        self.0.insert(name.into());
+    }
+}
+
+type StableHandler = DashMap<String, (DashSet<String>, DashMap<String, Tables>)>;
+#[derive(Debug, Default)]
+pub struct DatabasesHandler(
+    DashMap<String, DashMap<String, (DashSet<String>, DashMap<String, Tables>)>>,
+);
+
+impl DatabasesHandler {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn assert_database<'a>(
+        &'a self,
+        database: &str,
+    ) -> dashmap::mapref::one::Ref<String, StableHandler> {
+        match self.0.get(database) {
+            Some(st) => st,
+            None => {
+                self.0.insert(database.to_string(), Default::default());
+                self.0.get(database).unwrap()
+            }
+        }
+    }
+}
 #[derive(Debug)]
 pub struct AppState {
     opts: Opts,
     pool: taos::TaosPool,
     create_table_lock: Mutex<i32>,
+    tables: DatabasesHandler,
+    max_memory: u64,
 }
 
 #[actix_web::main]
@@ -392,7 +452,7 @@ async fn main() -> Result<()> {
 
     std::env::set_var(
         "RUST_LOG",
-        format!("actix_web=info,bailongma={}", opts.level.to_string()),
+        format!("actix_web=info,{}", opts.level.to_string()),
     );
     // fern::Dispatch::new()
     //         .level(opts.level)
@@ -419,21 +479,26 @@ async fn main() -> Result<()> {
         .build(taos_cfg)?;
     let workers = opts.workers;
     let listen = opts.listen.clone();
-    let state = web::Data::new(AppState {
+
+    use sysinfo::{ProcessExt, SystemExt};
+    let max_memory = opts.max_memory;
+    let state = Arc::new(AppState {
         opts,
         pool: taos_pool.clone(),
         create_table_lock: Default::default(),
+        tables: Default::default(),
+        max_memory: max_memory * 1024 * 1024,
     });
     let server = HttpServer::new(move || {
         App::new()
-            .app_data(state.clone())
+            .data(state.clone())
             .wrap(Logger::default())
-            .data(actix::Arbiter::new())
             .service(prometheus)
     })
     .workers(workers)
     .bind(&listen)?
     .run();
+    info!("start server, listen on {}", listen);
 
     server.await?;
     Ok(())

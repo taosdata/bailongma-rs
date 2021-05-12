@@ -74,7 +74,7 @@ impl PromGenerator {
     fn build_timeseries(&self, rt: &tokio::runtime::Runtime, ts_offset: i64) {
         let interval = self.interval;
         let sample = Sample {
-            value: ts_offset as _,
+            value: Some(ts_offset as _),
             timestamp: self.timestamp + ts_offset,
         };
         let samples = vec![sample];
@@ -171,6 +171,7 @@ fn main() {
         .thread_name("bench-prom")
         .build()
         .unwrap();
+    rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build_global().unwrap();
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
