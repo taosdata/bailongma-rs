@@ -1,20 +1,20 @@
-mod protos;
-mod utils;
-
-mod prometheus;
-
 use std::ops::Deref;
 
-use anyhow::bail;
-pub use prometheus::*;
+use actix::prelude::*;
+use log::{debug, error, info, trace, warn};
+use thiserror::Error;
+
+mod protos;
+mod utils;
+mod prometheus;
 
 #[cfg(feature = "protoc")]
 pub use protos::*;
 
-use actix::prelude::*;
-use log::{debug, error, info, trace, warn};
+pub use prometheus::*;
 
-use thiserror::Error;
+#[cfg(test)]
+mod test;
 
 #[derive(Debug, Error)]
 pub enum PrometheusRemoteWriteError {
@@ -114,7 +114,10 @@ impl Handler<PrometheusRemoteWriteMessage> for PrometheusRemoteWriteActor {
         );
         if ps_mem > self.max_memory {
             warn!("reached max memory limit: {}/{}", ps_mem, self.max_memory);
-            return Err(PrometheusRemoteWriteError::MemoryLimit(ps_mem, self.max_memory));
+            return Err(PrometheusRemoteWriteError::MemoryLimit(
+                ps_mem,
+                self.max_memory,
+            ));
         }
         Ok(())
     }

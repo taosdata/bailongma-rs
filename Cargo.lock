@@ -1214,9 +1214,9 @@ dependencies = [
 
 [[package]]
 name = "libtaos"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b45909ff21ead575a08709cf20fa1cc73e2609ec17bfc55c9cdffe6f2818d6d"
+checksum = "87d0931c25dc5a985a7110b31fac6f720cc8a76d1205f64b387599d81b68b727"
 dependencies = [
  "bindgen",
  "chrono",

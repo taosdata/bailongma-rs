@@ -198,14 +198,15 @@ async fn handle_table_schema(
 ) -> Result<()> {
     use futures::stream::{self, iter, StreamExt, TryStream, TryStreamExt};
     let stream = iter(req.timeseries.iter());
-    let res = stream.then(| ts| async move {
-        handle_stable_schema(state, taos, database, ts).await
-    }).collect::<Vec<_>>().await;
+    let res = stream
+        .then(|ts| async move { handle_stable_schema(state, taos, database, ts).await })
+        .collect::<Vec<_>>()
+        .await;
     for i in res {
         let _ = i?;
     }
     // let stream = iter(req.timeseries.iter().map(|ts| {
-        // handle_stable_schema(state, taos, database, ts)
+    // handle_stable_schema(state, taos, database, ts)
     // }));
     // let vec: Vec<_> = TryStreamExt::try_collect(stream).await;
     // for ts in &req.timeseries {
@@ -278,47 +279,17 @@ async fn write_tdengine_from_prometheus(
     Ok(())
 }
 
-#[post("/adapters/prometheus/{database}")]
+#[post("/adapters/prometheus/write")]
 async fn prometheus(
     state: web::Data<Arc<AppState>>,
-    database: web::Path<String>,
+    web::Query(options): web::Query<PrometheusOptions>,
     bytes: Bytes,
 ) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
 
     info!("recieved {} bytes from prometheus", bytes.len());
-    // let mut seconds = 0;
-    // loop {
-    //     use sysinfo::{ProcessExt, SystemExt};
-    //     let sys = sysinfo::System::new_all();
-    //     let used = sys.get_used_memory();
-    //     let total = sys.get_total_memory();
-    //     let ps = sys.get_process(std::process::id() as _).unwrap();
-    //     let ps_mem = ps.memory();
-    //     info!(
-    //         "MEMORY: {} in process, {}/{} used/total({:.2}%)",
-    //         ps_mem,
-    //         used,
-    //         total,
-    //         used as f32 / total as f32 * 100.
-    //     );
-
-    //     if ps_mem > state.max_memory {
-    //         warn!("reached max memory limit: {}/{}", ps_mem, state.max_memory);
-    //         tokio::time::sleep(Duration::from_secs(1)).await;
-    //         seconds += 1;
-    //         if seconds > 60 {
-    //             break;
-    //         }
-    //         // return Err(PrometheusRemoteWriteError::MemoryLimit(ps_mem, state.max_memory));
-    //         //return Ok(HttpResponse::InternalServerError().body("reached max memory limit"));
-    //     } else {
-    //         break;
-    //     }
-    // }
-
-    let database = database.as_str();
-    let database = database.to_string();
+    let database = options.database;
+    let database = database.unwrap_or("prometheus".to_string());
 
     let mut decoder = snap::raw::Decoder::new();
     let decompressed = decoder
@@ -329,11 +300,6 @@ async fn prometheus(
         actix_web::error::ErrorNotAcceptable("bad prometheus write request: deserializing error")
     })?;
     drop(decompressed); // drop decompressed data, it'll not be used after
-
-    //println!("{:?}", write_request);
-
-    // write prometheus with 8 retries in case of error
-    // arbiter.spawn(async move {
 
     // write tdengine, retry max 10 times if error.
     for _i in 0..10i32 {
@@ -348,6 +314,62 @@ async fn prometheus(
             tokio::time::sleep(Duration::from_millis(100)).await;
         } else {
             return Ok(HttpResponse::Ok().finish());
+        }
+    }
+
+    // if not success, write data and save it to persistent storage.
+    error!("failed with retries, the data will be lost");
+    std::fs::write(format!("prom-failed-{}.snappy", md5sum(bytes)), bytes)?;
+    // });
+    // body is loaded, now we can deserialize
+    Ok(HttpResponse::InternalServerError().finish())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PrometheusOptions {
+    database: Option<String>,
+}
+#[post("/adapters/prometheus/read")]
+async fn prometheus_read_handler(
+    state: web::Data<Arc<AppState>>,
+    web::Query(options): web::Query<PrometheusOptions>,
+    bytes: Bytes,
+) -> WebResult<HttpResponse> {
+    let bytes = bytes.deref();
+
+    info!("recieved {} bytes from prometheus", bytes.len());
+
+    let database = options.database;
+    let database = database.unwrap_or("prometheus".to_string());
+    // let database = database.to_string();
+
+    let mut decoder = snap::raw::Decoder::new();
+    let decompressed = decoder
+        .decompress_vec(bytes)
+        .map_err(|_| actix_web::error::ErrorNotAcceptable("bad snappy stream"))?;
+
+    let read_request = ReadRequest::decode(&mut decompressed.as_ref()).map_err(|_| {
+        actix_web::error::ErrorNotAcceptable("bad prometheus read request: deserializing error")
+    })?;
+    drop(decompressed); // drop decompressed data, it'll not be used after
+    let taos = state.pool.get().expect("get connection from pool");
+    let taos = taos.deref();
+    for _i in 0..10i32 {
+        let res = prometheus_read(taos, &database, &read_request).await;
+        if let Err(err) = res {
+            warn!("read tdengine error : {}", err,);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        } else {
+            let res = res.unwrap();
+            let mut buf: Vec<u8> = vec![];
+            let _ = res.encode(&mut buf).map_err(|_| {
+                actix_web::error::ErrorNotAcceptable("failed encode protobuf message")
+            })?;
+            let mut encoder = snap::raw::Encoder::new();
+            let compressed = encoder.compress_vec(&buf).map_err(|_| {
+                actix_web::error::ErrorNotAcceptable("failed to compress with snappy method")
+            })?;
+            return Ok(HttpResponse::Ok().body(compressed));
         }
     }
 
@@ -494,6 +516,7 @@ async fn main() -> Result<()> {
             .data(state.clone())
             .wrap(Logger::default())
             .service(prometheus)
+            .service(prometheus_read_handler)
     })
     .workers(workers)
     .bind(&listen)?

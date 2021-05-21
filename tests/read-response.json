@@ -1,0 +1,166 @@
+{
+ "results": [
+  {
+   "timeseries": [
+    {
+     "labels": [
+      {
+       "name": "__name__",
+       "value": "node_cpu_seconds_total"
+      },
+      {
+       "name": "cpu",
+       "value": "1"
+      },
+      {
+       "name": "instance",
+       "value": "localhost:9100"
+      },
+      {
+       "name": "job",
+       "value": "node"
+      },
+      {
+       "name": "mode",
+       "value": "system"
+      },
+      {
+       "name": "monitor",
+       "value": "example"
+      }
+     ],
+     "samples": [
+      {
+       "value": 169.54,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 157.81,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 160.14,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 157.15,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 157.5,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 184.59,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 157.18,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 178.33,
+       "timestamp": 1621511024533
+      },
+      {
+       "value": 157.81,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 158.07,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 157.41,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 169.8,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 184.84,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 178.73,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 157.42,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 160.4,
+       "timestamp": 1621511039533
+      },
+      {
+       "value": 170.11,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 160.72,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 179.15,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 157.75,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 185.28,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 157.74,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 158.22,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 158.34,
+       "timestamp": 1621511054533
+      },
+      {
+       "value": 158.08,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 179.64,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 158.15,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 158.6,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 170.48,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 158.76,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 161.1,
+       "timestamp": 1621511069533
+      },
+      {
+       "value": 185.74,
+       "timestamp": 1621511069533
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
