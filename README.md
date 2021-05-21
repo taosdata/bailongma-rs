@@ -1,6 +1,6 @@
 # Bailongma
 
-> TDengine adatper for Prometheus
+> TDengine adatper for Prometheus, and others will happen soon.
 
 For simple use case, just run:
 
@@ -13,6 +13,8 @@ For all options, type `--help` for details.
 Long usage here:
 
 ```sh
+TDengine adapter for prometheus
+
 USAGE:
     bailongma [OPTIONS]
 
@@ -39,11 +41,14 @@ OPTIONS:
     -L, --listen <listen>
             Listen to an specific ip and port [default: 0.0.0.0:10203]
 
-    -m, --max-connections <max-connections>
+    -C, --max-connections <max-connections>
             Max TDengine connections
             
             - in concurrent cases, use max as 50000 - for common use, set it as 5000 [default:
             50000]
+
+    -M, --max-memory <max-memory>
+            Max memroy, unit: GB [default: 50]
 
     -P, --password <password>
             TDengine password [default: taosdata]
@@ -64,20 +69,36 @@ Example:
 bailongma -h tdengine -p 6030 -u root -P taospass --listen 0.0.0.0:10101
 ```
 
-It will listen to port `10101`.
+It will listen to port `10101`(default is `10230`).
 
 Configure in `prometheus.yml`:
 
 ```yaml
 remote_write:
-  - url: "localhost:10101/adapters/prometheus/test6"
+  - url: "localhost:10101/adapters/prometheus/write"
+remote_read:
+  - url: "localhost:10101/adapters/prometheus/read"
 ```
 
-The url endpoint is `/adapters/prometheus/{database}`. It will automatically create database for each endpoint. For the demo config, bailongma will write prometheus data to `test6` database.
+The default database is `prometheus`, use query option `database` to modify this, configuration file is like:
+
+```yaml
+remote_write:
+  - url: "localhost:10101/adapters/prometheus/write?database=prom1"
+remote_read:
+  - url: "localhost:10101/adapters/prometheus/read?database=prom1"
+```
+
+## Build and Install
+
+```sh
+cargo build
+cargo install --path .
+```
 
 ## blm-bench-prom
 
-`cargo build` will also produce a benchmark tool for memory tracking.
+`cargo build` will also produce a benchmark tool.
 
 ```sh
 blm-bench-prom http://127.0.0.1:10230/adapters/prometheus/test5 \

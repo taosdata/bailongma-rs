@@ -63,6 +63,7 @@ pub struct Labels {
 /// Matcher specifies a rule, which can match or set of labels or not.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[serde(default)]
 pub struct LabelMatcher {
     #[prost(enumeration="label_matcher::Type", tag="1")]
     pub r#type: i32,
@@ -85,10 +86,11 @@ pub mod label_matcher {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[serde(default)]
 pub struct ReadHints {
     /// Query step size in milliseconds.
-    #[prost(int64, tag="1")]
-    pub step_ms: i64,
+    #[prost(int64, optional, tag="1")]
+    pub step_ms: Option<i64>,
     /// String representation of surrounding function or aggregation.
     #[prost(string, tag="2")]
     pub func: ::prost::alloc::string::String,
@@ -105,8 +107,8 @@ pub struct ReadHints {
     #[prost(bool, tag="6")]
     pub by: bool,
     /// Range vector selector range in milliseconds.
-    #[prost(int64, tag="7")]
-    pub range_ms: i64,
+    #[prost(int64, optional, tag="7")]
+    pub range_ms: Option<i64>,
 }
 /// Chunk represents a TSDB chunk.
 /// Time range [min, max] is inclusive.
@@ -155,6 +157,7 @@ pub struct WriteRequest {
 /// ReadRequest represents a remote read request.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[serde(default)]
 pub struct ReadRequest {
     #[prost(message, repeated, tag="1")]
     pub queries: ::prost::alloc::vec::Vec<Query>,

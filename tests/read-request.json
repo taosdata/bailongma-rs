@@ -1,0 +1,27 @@
+{
+ "queries": [
+  {
+   "start_timestamp_ms": 1621511013040,
+   "end_timestamp_ms": 1621511073040,
+   "matchers": [
+    {
+     "name": "mode",
+     "value": "system"
+    },
+    {
+     "name": "__name__",
+     "value": "node_cpu_seconds_total"
+    },
+    {
+     "name": "monitor",
+     "value": "example"
+    }
+   ],
+   "hints": {
+    "func": "rate",
+    "start_ms": 1621511013040,
+    "end_ms": 1621511073040
+   }
+  }
+ ]
+}
