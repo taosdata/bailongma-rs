@@ -1,0 +1,39 @@
+name: Rust
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    container:
+      image: zitsen/tdengine-server:develop
+      options: --user root
+      volumes:
+        - /etc/apt/sources.list:/etc/apt/sources.list
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Install latest rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+          override: true
+      - uses: Swatinem/rust-cache@v1
+      - name: Build essential
+        run: apt-get update && apt-get install -y build-essential libclang-10-dev llvm-10 clang-10
+      - name: Build
+        run: |
+          taosd > /dev/null &
+          cargo build --all --release
+          strip target/release/bailongma
+          mv target/release/bailongma target/release/bailongma-amd64
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            target/release/bailongma-amd64
