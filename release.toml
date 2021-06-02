@@ -1,4 +1,4 @@
 pre-release-hook = ["./.github/clog.sh"]
-exclude-paths = ["/README.md", "/tests/**", "/examples/**"]
+exclude-paths = ["/tests/**", "/examples/**", "/data/**"]
 post-release-commit-message = "chore(next): start next dev iteration {{version}}"
 pre-release-commit-message = "release: {{version}}"
