@@ -3,7 +3,13 @@ authors = ["Huo Linhe <linhehuo@gmail.com>"]
 edition = "2018"
 name = "bailongma"
 version = "0.1.0"
-
+description = """
+Official Prometheus Remote Storage Adapter for TDengine
+"""
+keywords = ["TDengine", "prometheus", "remote", "blm"]
+categories = ["command-line-utilities"]
+license = "AGPL-1.0-or-later"
+homepage = "https://taosdata.com/"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
