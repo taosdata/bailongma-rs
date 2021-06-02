@@ -29,11 +29,13 @@ jobs:
           taosd > /dev/null &
           cargo build --all --release
           strip target/release/bailongma
-          mv target/release/bailongma target/release/bailongma-{{ github.ref }}-amd64
+          mv target/release/bailongma target/release/bailongma-amd64
 
       - name: Generate Changelog
         if: startsWith(github.ref, 'refs/tags/')
-        run: ./.github/changes.sh > ${{ github.workflow }}-CHANGELOG.txt
+        run: |
+          ./.github/changes.sh > ${{ github.workflow }}-CHANGELOG.txt
+          cat ${{ github.workflow }}-CHANGELOG.txt
       - name: Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
@@ -42,4 +44,4 @@ jobs:
         with:
           body_path: ${{ github.workflow }}-CHANGELOG.txt
           files: |
-            target/release/bailongma-{{ github.ref }}-amd64
+            target/release/bailongma-amd64
