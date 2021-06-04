@@ -1,6 +1,6 @@
 [package]
 name = "bailongma"
-version = "0.1.1-alpha.0"
+version = "0.1.1"
 authors = ["Huo Linhe <linhehuo@gmail.com>"]
 categories = ["command-line-utilities"]
 description = """
