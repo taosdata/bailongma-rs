@@ -1,26 +1,24 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use actix::{Addr, SyncArbiter};
 use actix_web::{
     middleware::Logger,
     post,
     web::{self, Bytes},
-    App, HttpRequest, HttpResponse, HttpServer, Responder, Result as WebResult,
+    App, HttpResponse, HttpServer, Result as WebResult,
 };
 use anyhow::Result;
 use clap::Clap;
 use dashmap::{DashMap, DashSet};
 
-use futures::TryStreamExt;
 use log::*;
 use prost::Message;
 
-use libtaos::{self as taos, Taos, TaosCfg, TaosCfgBuilder, TaosCode, TaosPool};
+use libtaos::{self as taos, Taos, TaosCfgBuilder, TaosCode};
 
 // pub mod protos;
 pub mod utils;
@@ -49,6 +47,7 @@ fn tag_name_escape(name: &str) -> String {
         .replace("-", "_")
         .to_lowercase()
 }
+
 async fn handle_stable_schema<'prom>(
     state: &AppState,
     taos: &Taos,
@@ -178,11 +177,10 @@ async fn handle_stable_schema<'prom>(
         tagmap
             .values()
             .map(|value| {
-                let value = snailquote::escape(value);
                 if value.len() < 127 {
-                    format!("\"{}\"", value)
+                    format!("\"{}\"", value.escape_default())
                 } else {
-                    format!("\"{}\"", &value[0..127])
+                    format!("\"{}\"", &value[0..127].escape_default())
                 }
             })
             .join(",")
@@ -303,6 +301,8 @@ async fn prometheus(
         actix_web::error::ErrorNotAcceptable("bad prometheus write request: deserializing error")
     })?;
     drop(decompressed); // drop decompressed data, it'll not be used after
+
+    // std::fs::write(format!("prom-failed-{}.json", md5sum(bytes)), serde_json::to_string(&write_request).unwrap())?;
 
     // write tdengine, retry max 10 times if error.
     for _i in 0..10i32 {
