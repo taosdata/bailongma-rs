@@ -1,3 +1,18 @@
+<a name="v0.1.1"></a>
+## v0.1.1 (2021-06-04)
+
+
+#### CI
+
+*   use nightly toolchain to enable backtrace ([b6dd4e2b](b6dd4e2b))
+
+#### Bug Fixes
+
+*   fix sql syntax error if value contains quote ([645ed56a](645ed56a))
+* **Prometheus:**  use escape_default for tag value ([a38d5041](a38d5041))
+
+
+
 <a name="v0.1.0"></a>
 ## v0.1.0 (2021-06-02)
 
