@@ -1,15 +1,16 @@
 [package]
-authors = ["Huo Linhe <linhehuo@gmail.com>"]
-edition = "2018"
 name = "bailongma"
 version = "0.1.1-alpha.0"
+authors = ["Huo Linhe <linhehuo@gmail.com>"]
+categories = ["command-line-utilities"]
 description = """
 Official Prometheus Remote Storage Adapter for TDengine
 """
-keywords = ["TDengine", "prometheus", "remote", "blm"]
-categories = ["command-line-utilities"]
-license = "AGPL-1.0-or-later"
+edition = "2018"
+
 homepage = "https://taosdata.com/"
+keywords = ["TDengine", "prometheus", "remote", "blm"]
+license = "AGPL-1.0-or-later"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -18,9 +19,9 @@ actix-web = "4.0.0-beta.6"
 anyhow = {version = "1.0.40", features = ["backtrace"]}
 bytes = "1.0"
 clap = "3.0.0-beta.2"
+dashmap = "4"
 env_logger = "0.8.3"
 fern = "0.6"
-dashmap = "4"
 futures = "0.3.13"
 itertools = "0.10"
 libtaos = {version = "0.2.3", features = ["r2d2"]}
@@ -35,6 +36,7 @@ r2d2 = "0.8"
 rayon = "1.5"
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1"
+snailquote = "0.3.0"
 snap = "1"
 sysinfo = "0.17.2"
 tempfile = "3"

@@ -177,10 +177,13 @@ async fn handle_stable_schema<'prom>(
         taghash,
         tagmap
             .values()
-            .map(|value| if value.len() < 127 {
-                format!("\"{}\"", &value)
-            } else {
-                format!("\"{}\"", &value[0..127])
+            .map(|value| {
+                let value = snailquote::escape(value);
+                if value.len() < 127 {
+                    format!("\"{}\"", value)
+                } else {
+                    format!("\"{}\"", &value[0..127])
+                }
             })
             .join(",")
     );
