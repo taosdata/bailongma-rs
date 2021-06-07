@@ -171,7 +171,10 @@ fn main() {
         .thread_name("bench-prom")
         .build()
         .unwrap();
-    rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build_global().unwrap();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(opts.threads)
+        .build_global()
+        .unwrap();
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -4,9 +4,9 @@ use actix::prelude::*;
 use log::{debug, error, info, trace, warn};
 use thiserror::Error;
 
+mod prometheus;
 mod protos;
 mod utils;
-mod prometheus;
 
 #[cfg(feature = "protoc")]
 pub use protos::*;

@@ -28,7 +28,11 @@ fn main() -> Result<()> {
     let decompressed = decoder
         .decompress_vec(&bytes)
         .expect("decompressingc error");
-    log::debug!("decompressed {} bytes to {}", bytes.len(), decompressed.len());
+    log::debug!(
+        "decompressed {} bytes to {}",
+        bytes.len(),
+        decompressed.len()
+    );
 
     let write_request = WriteRequest::decode(&mut decompressed.as_ref()).expect("deserialzied ok");
 

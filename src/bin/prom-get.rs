@@ -22,9 +22,7 @@ use std::sync::atomic::AtomicI32;
 static PROM_NUMBER: AtomicI32 = AtomicI32::new(0);
 
 #[post("/adapters/prometheus/write2")]
-async fn prometheus_write(
-    bytes: Bytes,
-) -> WebResult<HttpResponse> {
+async fn prometheus_write(bytes: Bytes) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
     let num = PROM_NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     std::fs::write(format!("prom-write-{:04}.snappy", num), bytes)?;
@@ -32,16 +30,13 @@ async fn prometheus_write(
     Ok(HttpResponse::Ok().finish())
 }
 #[post("/adapters/prometheus/read")]
-async fn prometheus_read(
-    bytes: Bytes,
-) -> WebResult<HttpResponse> {
+async fn prometheus_read(bytes: Bytes) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
     let num = PROM_NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     std::fs::write(format!("prom-read-{:04}.snappy", num), bytes)?;
     // body is loaded, now we can deserialize
     Ok(HttpResponse::Ok().finish())
 }
-
 
 /// TDengine adapter for prometheus.
 #[derive(Debug, Clone, Clap)]
@@ -59,7 +54,7 @@ struct Opts {
     file_number_start: u32,
     /// Stop at seconds timeout
     #[clap(short, long, default_value = "5")]
-    stop_at: u64
+    stop_at: u64,
 }
 
 #[actix_web::main]
@@ -68,7 +63,10 @@ async fn main() -> Result<()> {
 
     std::env::set_var(
         "RUST_LOG",
-        format!("actix_web=info,bailongma={level},{level}", level = opts.level.to_string()),
+        format!(
+            "actix_web=info,bailongma={level},{level}",
+            level = opts.level.to_string()
+        ),
     );
     env_logger::init();
     let listen = opts.listen.clone();
