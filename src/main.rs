@@ -300,7 +300,12 @@ async fn prometheus(
     let write_request = WriteRequest::decode(&mut decompressed.as_ref()).map_err(|prost_err| {
         // decompressed.len();
         let err = "bad prometheus write request: deserializing error";
-        error!("{}, protolens: {}, raw error: {:?}", err, decompressed.len(), prost_err);
+        error!(
+            "{}, protolens: {}, raw error: {:?}",
+            err,
+            decompressed.len(),
+            prost_err
+        );
         actix_web::error::ErrorNotAcceptable(err)
     })?;
     drop(decompressed); // drop decompressed data, it'll not be used after
@@ -422,7 +427,7 @@ struct Opts {
     ///
     ///   - in concurrent cases, use max as 50000
     ///   - for common use, set it as 5000
-    #[clap(short = 'C', long, default_value = "50000")]
+    #[clap(short = 'C', long, default_value = "500")]
     max_connections: u32,
     /// Max memroy, unit: GB
     #[clap(short = 'M', long, default_value = "50")]
@@ -480,7 +485,10 @@ async fn main() -> Result<()> {
 
     std::env::set_var(
         "RUST_LOG",
-        format!("actix_web=info,{}", opts.level.to_string()),
+        format!(
+            "actix_web=info,bailongma={level},main={level}",
+            level = opts.level.to_string()
+        ),
     );
     // fern::Dispatch::new()
     //         .level(opts.level)
