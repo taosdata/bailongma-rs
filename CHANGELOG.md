@@ -1,3 +1,17 @@
+<a name="v0.2.0"></a>
+## v0.2.0 (2021-06-07)
+
+
+#### Features
+
+* **[TD-4607]:**  support regex match/not-match for promql ([e03be78a](e03be78a))
+
+#### Bug Fixes
+
+*   improve error log in case of prom data error ([4bf725f0](4bf725f0))
+
+
+
 <a name="v0.1.1"></a>
 ## v0.1.1 (2021-06-04)
 
