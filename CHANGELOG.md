@@ -1,3 +1,17 @@
+<a name="v0.2.1"></a>
+## v0.2.1 (2021-06-07)
+
+
+#### Bug Fixes
+
+* **[TD-4607]:**  fix prom remote read results labels error ([c85a9cc8](c85a9cc8))
+
+#### CI
+
+*   add blm-bench-prom to release ([ad309aaa](ad309aaa))
+
+
+
 <a name="v0.2.0"></a>
 ## v0.2.0 (2021-06-07)
 
