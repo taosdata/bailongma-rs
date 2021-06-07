@@ -1,14 +1,20 @@
+use std::collections::BTreeMap;
+
 use crate::prometheus::types::*;
 
 use thiserror::Error;
 
-use libtaos::field::TaosQueryData;
+use libtaos::field::{ColumnMeta, Field, TaosQueryData};
 use libtaos::Taos;
+
+use regex::Regex;
 
 #[derive(Error, Debug)]
 pub enum PrometheusReaderError {
     #[error("TDengine connection error")]
     TaosError(#[from] libtaos::Error),
+    #[error("Regex pattern error: {0}")]
+    RegexError(#[from] regex::Error),
     #[error("unknown table name in query")]
     NoneTableName,
     #[error("unknown metric name match type {r#type:?}")]
@@ -37,9 +43,16 @@ fn anchor_value(value: &str) -> String {
         (false, false) => value.to_string(),
     }
 }
-pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String)> {
+
+pub enum LabelFilter {
+    Re(Regex),
+    Nre(Regex),
+}
+pub type LabelFilters = BTreeMap<String, LabelFilter>;
+pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String, LabelFilters)> {
     let mut table_name = String::new();
     let mut matchers = Vec::new();
+    let mut filters = LabelFilters::new();
     for matcher in &query.matchers {
         log::trace!("{:?}", matcher);
         let escaped_name = escape_value(&matcher.name);
@@ -81,16 +94,10 @@ pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String)> {
                         matchers.push(format!("t_{} != '{}'", escaped_name, value));
                     }
                     label_matcher::Type::Re => {
-                        matchers.push(format!(
-                            "t_{} like '{}'",
-                            escaped_name,
-                            anchor_value(&value)
-                        ));
+                        filters.insert(escaped_name, LabelFilter::Re(Regex::new(&value)?));
                     }
-                    _ => {
-                        return Err(PrometheusReaderError::UnsupportedMatcherTypeForMetrics(
-                            value,
-                        ));
+                    label_matcher::Type::Nre => {
+                        filters.insert(escaped_name, LabelFilter::Nre(Regex::new(&value)?));
                     }
                 }
             }
@@ -112,7 +119,7 @@ pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String)> {
         table_name,
         matchers.join(" AND ")
     );
-    Ok((table_name, sql))
+    Ok((table_name, sql, filters))
 }
 
 #[test]
@@ -142,7 +149,7 @@ fn test_query_to_sql() {
           }
          }"#;
     let query: Query = serde_json::from_str(data).unwrap();
-    let (table_name, sql) = query_to_sql(&query, "prometheus").unwrap();
+    let (table_name, sql, filters) = query_to_sql(&query, "prometheus").unwrap();
     assert_eq!(table_name, "node_cpu_seconds_total");
     println!("{}", sql);
     assert_eq!(sql, "SELECT * FROM prometheus.node_cpu_seconds_total WHERE t_mode = 'system' AND t_monitor = 'example' AND ts >= 1621511013040 AND ts <= 1621511073040 ORDER BY ts")
@@ -152,7 +159,7 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
     let ReadRequest { queries, .. } = &req;
     let mut results = Vec::new();
     for query in queries {
-        let (table_name, sql) = query_to_sql(query, database)?;
+        let (table_name, sql, filters) = query_to_sql(query, database)?;
         log::trace!("sql: {}", sql);
 
         let TaosQueryData { column_meta, rows } = taos.query(&sql).await?;
@@ -163,6 +170,8 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
         let mut labels = Vec::new();
         let mut samples = Vec::new();
         let mut label_inited = false;
+        let mut last_taghash = None;
+        let mut taghash_match = false;
         labels.push(Label {
             name: "__name__".to_string(),
             value: table_name,
@@ -171,6 +180,29 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
         for row in rows {
             log::trace!("{:?}", row);
             let mut sample = Sample::default();
+            if filters.len() > 0 {
+                if !row
+                    .iter()
+                    .zip(&column_meta)
+                    .all(|(field, meta)| {
+                        if let Some(filter) = filters.get(meta.name.as_str()) {
+                            match filter {
+                                LabelFilter::Re(pattern) => {
+                                    field.as_string().map_or(false, |v| pattern.is_match(&v))
+                                }
+                                LabelFilter::Nre(pattern) => {
+                                    field.as_string().map_or(true, |v| !pattern.is_match(&v))
+                                }
+                            }
+                        } else {
+                            true
+                        }
+                    })
+                {
+                    continue;
+                };
+            }
+
             for (field, meta) in row.into_iter().zip(&column_meta) {
                 match meta.name.as_str() {
                     "ts" => {
@@ -179,23 +211,49 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
                     "value" => {
                         sample.value = field.as_double().map(|v| *v);
                     }
-                    "taghash" => {}
+                    "taghash" => {
+                        let taghash = field.as_string().expect("taghash should be always none-empty");
+
+                        match &last_taghash {
+                            None => {
+                                last_taghash = Some(taghash.to_string());
+                                taghash_match = true;
+                            }
+                            Some(v) if v == taghash => {
+                                taghash_match = true;
+                            }
+                            _ => {
+                                taghash_match = false;
+                            }
+                        }
+                    }
                     name => {
                         if !label_inited {
-                            let label = Label {
-                                name: name.replacen("t_", "", 1),
-                                value: field.as_string().unwrap().to_string(),
-                            };
-                            labels.push(label);
+                            if let Some(value) = field.as_string() {
+                                let label = Label {
+                                    name: name.replacen("t_", "", 1),
+                                    value: value.to_string()
+                                };
+                                labels.push(label);
+                            }
                         }
                     }
                 }
             }
             label_inited = true;
+            if !taghash_match {
+                let ts = TimeSeries { labels: labels.clone(), samples: samples.clone() };
+                timeseries.push(ts);
+                samples = Vec::new();
+                labels = Vec::new();
+                label_inited = false;
+            }
             samples.push(sample);
         }
-        let ts = TimeSeries { labels, samples };
-        timeseries.push(ts);
+        if labels.len() > 0 && samples.len() > 0 {
+            let ts = TimeSeries { labels, samples };
+            timeseries.push(ts);
+        }
         results.push(QueryResult { timeseries });
     }
 
@@ -205,38 +263,134 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
 #[tokio::test]
 async fn test_read_request() {
     let taos = crate::test::taos().unwrap();
+    taos.exec("drop database if exists prom_read_0xabc").await.unwrap();
+    taos.exec("create database prom_read_0xabc").await.unwrap();
+    taos.exec("use prom_read_0xabc").await.unwrap();
+    taos.exec("create table tb1 (ts timestamp, str1 binary(10), str2 nchar(10))").await.unwrap();
+    taos.exec("insert into tb1 values(1621511073000, 'taosdata', NULL) (1621511073100, 'taos', '涛思数据')(1621511073200, 'a taos', '涛思数据')(1621511073200, 'nothing', 'abc')").await.unwrap();
+
+    // Case 1, regex match `taos`.
     let data = r#"{
         "queries": [
          {
-          "start_timestamp_ms": 1621511013040,
-          "end_timestamp_ms": 1621511073040,
+          "start_timestamp_ms": 1621511073000,
+          "end_timestamp_ms": 1621511073400,
           "matchers": [
+            {
+             "name": "__name__",
+             "value": "tb1"
+            },
            {
-            "name": "mode",
-            "value": "system"
-           },
-           {
-            "name": "__name__",
-            "value": "node_cpu_seconds_total"
-           },
-           {
-            "name": "monitor",
-            "value": "example"
+            "name": "str1",
+            "type": 2,
+            "value": "^taos.*"
            }
           ],
           "hints": {
            "func": "rate",
-           "start_ms": 1621511013040,
-           "end_ms": 1621511073040
+           "start_ms": 1621511073000,
+           "end_ms": 1621511073400
           }
          }
         ]
        }"#;
 
     let req: ReadRequest = serde_json::from_str(data).unwrap();
-    let res = read(&taos, "prometheus", &req).await.unwrap();
+    let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
     println!("{:?}", res);
-    let file = std::fs::File::open("tests/read-response.json").unwrap();
-    let expect: ReadResponse = serde_json::from_reader(file).unwrap();
-    assert_eq!(res, expect);
+    assert_eq!(res.results[0].timeseries.len(), 2);
+
+    // Case 2, regex match `^taos`.
+    let data = r#"{
+        "queries": [
+         {
+          "start_timestamp_ms": 1621511073000,
+          "end_timestamp_ms": 1621511073400,
+          "matchers": [
+            {
+             "name": "__name__",
+             "value": "tb1"
+            },
+           {
+            "name": "str1",
+            "type": 2,
+            "value": "taos.*"
+           }
+          ],
+          "hints": {
+           "func": "rate",
+           "start_ms": 1621511073000,
+           "end_ms": 1621511073400
+          }
+         }
+        ]
+       }"#;
+
+    let req: ReadRequest = serde_json::from_str(data).unwrap();
+    let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
+    println!("{:?}", res);
+    assert_eq!(res.results[0].timeseries.len(), 3);
+
+    // Case 3, regex not match `^taos`.
+    let data = r#"{
+        "queries": [
+         {
+          "start_timestamp_ms": 1621511073000,
+          "end_timestamp_ms": 1621511073400,
+          "matchers": [
+            {
+             "name": "__name__",
+             "value": "tb1"
+            },
+           {
+            "name": "str1",
+            "type": 3,
+            "value": "^taos.*"
+           }
+          ],
+          "hints": {
+           "func": "rate",
+           "start_ms": 1621511073000,
+           "end_ms": 1621511073400
+          }
+         }
+        ]
+       }"#;
+
+    let req: ReadRequest = serde_json::from_str(data).unwrap();
+    let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
+    println!("{:?}", res);
+    assert_eq!(res.results[0].timeseries.len(), 1);
+
+    // Case 4, regex match unicode `涛思数据`
+    let data = r#"{
+        "queries": [
+         {
+          "start_timestamp_ms": 1621511073000,
+          "end_timestamp_ms": 1621511073400,
+          "matchers": [
+            {
+             "name": "__name__",
+             "value": "tb1"
+            },
+           {
+            "name": "str2",
+            "type": 2,
+            "value": "涛思数据"
+           }
+          ],
+          "hints": {
+           "func": "rate",
+           "start_ms": 1621511073000,
+           "end_ms": 1621511073400
+          }
+         }
+        ]
+       }"#;
+
+    let req: ReadRequest = serde_json::from_str(data).unwrap();
+    let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
+    println!("{:?}", res);
+    assert_eq!(res.results[0].timeseries.len(), 2);
+    taos.exec("drop database prom_read_0xabc").await.unwrap();
 }

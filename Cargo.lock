@@ -353,6 +353,7 @@ dependencies = [
  "psutil",
  "r2d2",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "snailquote",
