@@ -21,16 +21,27 @@ use std::sync::atomic::AtomicI32;
 
 static PROM_NUMBER: AtomicI32 = AtomicI32::new(0);
 
-#[post("/adapters/prometheus/{database}")]
-async fn prometheus(
+#[post("/adapters/prometheus/write2")]
+async fn prometheus_write(
     bytes: Bytes,
 ) -> WebResult<HttpResponse> {
     let bytes = bytes.deref();
     let num = PROM_NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    std::fs::write(format!("prom-data-{:04}.snappy", num), bytes)?;
+    std::fs::write(format!("prom-write-{:04}.snappy", num), bytes)?;
     // body is loaded, now we can deserialize
     Ok(HttpResponse::Ok().finish())
 }
+#[post("/adapters/prometheus/read")]
+async fn prometheus_read(
+    bytes: Bytes,
+) -> WebResult<HttpResponse> {
+    let bytes = bytes.deref();
+    let num = PROM_NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    std::fs::write(format!("prom-read-{:04}.snappy", num), bytes)?;
+    // body is loaded, now we can deserialize
+    Ok(HttpResponse::Ok().finish())
+}
+
 
 /// TDengine adapter for prometheus.
 #[derive(Debug, Clone, Clap)]
@@ -66,7 +77,8 @@ async fn main() -> Result<()> {
         App::new()
             .data(num.clone())
             .wrap(Logger::default())
-            .service(prometheus)
+            .service(prometheus_write)
+            .service(prometheus_read)
     })
     .bind(&listen)?
     .shutdown_timeout(opts.stop_at)
