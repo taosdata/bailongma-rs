@@ -46,7 +46,7 @@ pub struct TimeSeries {
     #[prost(message, repeated, tag="2")]
     pub samples: ::prost::alloc::vec::Vec<Sample>,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Hash, Eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Label {
     #[prost(string, tag="1")]
@@ -54,7 +54,7 @@ pub struct Label {
     #[prost(string, tag="2")]
     pub value: ::prost::alloc::string::String,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Hash)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Labels {
     #[prost(message, repeated, tag="1")]

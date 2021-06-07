@@ -25,6 +25,7 @@ fern = "0.6"
 futures = "0.3.13"
 itertools = "0.10"
 libtaos = {version = "0.2.3", features = ["r2d2"]}
+linked-hash-map = "0.5.4"
 log = "0.4.14"
 lru = "0.6.5"
 md-5 = "0.9.1"

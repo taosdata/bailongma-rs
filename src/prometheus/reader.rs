@@ -33,15 +33,7 @@ use PrometheusReaderError::*;
 type Result<T> = std::result::Result<T, PrometheusReaderError>;
 
 fn escape_value(value: &str) -> String {
-    value.replace("'", "''")
-}
-fn anchor_value(value: &str) -> String {
-    match (value.starts_with('^'), value.ends_with('$')) {
-        (true, true) => value.replacen('^', "", 1).replacen('$', "", 1),
-        (true, false) => value.replacen('^', "", 1),
-        (false, true) => value.replacen('$', "", 1),
-        (false, false) => value.to_string(),
-    }
+    value.escape_default().to_string()
 }
 
 pub enum LabelFilter {
@@ -87,11 +79,11 @@ pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String, La
                                 name = escaped_name
                             ));
                         } else {
-                            matchers.push(format!("t_{} = '{}'", escaped_name, value));
+                            matchers.push(format!("t_{} = \"{}\"", escaped_name, value));
                         }
                     }
                     label_matcher::Type::Neq => {
-                        matchers.push(format!("t_{} != '{}'", escaped_name, value));
+                        matchers.push(format!("t_{} != \"{}\"", escaped_name, value));
                     }
                     label_matcher::Type::Re => {
                         filters.insert(escaped_name, LabelFilter::Re(Regex::new(&value)?));
@@ -157,52 +149,43 @@ fn test_query_to_sql() {
 
 pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<ReadResponse> {
     let ReadRequest { queries, .. } = &req;
-    let mut results = Vec::new();
+    // let mut results = Vec::new();
+    type Map = linked_hash_map::LinkedHashMap<Vec<Label>, Vec<Sample>>;
+    let mut results_map = Map::default();
     for query in queries {
         let (table_name, sql, filters) = query_to_sql(query, database)?;
         log::trace!("sql: {}", sql);
 
         let TaosQueryData { column_meta, rows } = taos.query(&sql).await?;
 
-        // let mut cache = Vec::new();
-
-        let mut timeseries = Vec::new();
-        let mut labels = Vec::new();
-        let mut samples = Vec::new();
-        let mut label_inited = false;
-        let mut last_taghash = None;
-        let mut taghash_match = false;
-        labels.push(Label {
-            name: "__name__".to_string(),
-            value: table_name,
-        });
-
+        // call regex filters
         for row in rows {
             log::trace!("{:?}", row);
-            let mut sample = Sample::default();
             if filters.len() > 0 {
-                if !row
-                    .iter()
-                    .zip(&column_meta)
-                    .all(|(field, meta)| {
-                        if let Some(filter) = filters.get(meta.name.as_str()) {
-                            match filter {
-                                LabelFilter::Re(pattern) => {
-                                    field.as_string().map_or(false, |v| pattern.is_match(&v))
-                                }
-                                LabelFilter::Nre(pattern) => {
-                                    field.as_string().map_or(true, |v| !pattern.is_match(&v))
-                                }
+                if !row.iter().zip(&column_meta).all(|(field, meta)| {
+                    if let Some(filter) = filters.get(meta.name.as_str()) {
+                        match filter {
+                            LabelFilter::Re(pattern) => {
+                                field.as_string().map_or(false, |v| pattern.is_match(&v))
                             }
-                        } else {
-                            true
+                            LabelFilter::Nre(pattern) => {
+                                field.as_string().map_or(true, |v| !pattern.is_match(&v))
+                            }
                         }
-                    })
-                {
+                    } else {
+                        true
+                    }
+                }) {
                     continue;
                 };
             }
 
+            let mut labels = Vec::new();
+            let mut sample = Sample::default();
+            labels.push(Label {
+                name: "__name__".to_string(),
+                value: table_name.to_string(),
+            });
             for (field, meta) in row.into_iter().zip(&column_meta) {
                 match meta.name.as_str() {
                     "ts" => {
@@ -211,51 +194,32 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
                     "value" => {
                         sample.value = field.as_double().map(|v| *v);
                     }
-                    "taghash" => {
-                        let taghash = field.as_string().expect("taghash should be always none-empty");
-
-                        match &last_taghash {
-                            None => {
-                                last_taghash = Some(taghash.to_string());
-                                taghash_match = true;
-                            }
-                            Some(v) if v == taghash => {
-                                taghash_match = true;
-                            }
-                            _ => {
-                                taghash_match = false;
-                            }
-                        }
-                    }
+                    "taghash" => {}
                     name => {
-                        if !label_inited {
-                            if let Some(value) = field.as_string() {
-                                let label = Label {
-                                    name: name.replacen("t_", "", 1),
-                                    value: value.to_string()
-                                };
-                                labels.push(label);
-                            }
+                        if let Some(value) = field.as_string() {
+                            let label = Label {
+                                name: name.replacen("t_", "", 1),
+                                value: value.to_string(),
+                            };
+                            labels.push(label);
                         }
                     }
                 }
             }
-            label_inited = true;
-            if !taghash_match {
-                let ts = TimeSeries { labels: labels.clone(), samples: samples.clone() };
-                timeseries.push(ts);
-                samples = Vec::new();
-                labels = Vec::new();
-                label_inited = false;
+
+            if let Some(entry) = results_map.get_mut(&labels) {
+                entry.push(sample);
+            } else {
+                results_map.insert(labels, vec![sample]);
             }
-            samples.push(sample);
         }
-        if labels.len() > 0 && samples.len() > 0 {
-            let ts = TimeSeries { labels, samples };
-            timeseries.push(ts);
-        }
-        results.push(QueryResult { timeseries });
     }
+    let timeseries = results_map
+        .into_iter()
+        .map(|(labels, samples)| TimeSeries { labels, samples })
+        .collect();
+    let results = vec![QueryResult { timeseries }];
+    log::debug!("results: {:?}", results);
 
     Ok(ReadResponse { results })
 }
@@ -263,10 +227,14 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
 #[tokio::test]
 async fn test_read_request() {
     let taos = crate::test::taos().unwrap();
-    taos.exec("drop database if exists prom_read_0xabc").await.unwrap();
+    taos.exec("drop database if exists prom_read_0xabc")
+        .await
+        .unwrap();
     taos.exec("create database prom_read_0xabc").await.unwrap();
     taos.exec("use prom_read_0xabc").await.unwrap();
-    taos.exec("create table tb1 (ts timestamp, str1 binary(10), str2 nchar(10))").await.unwrap();
+    taos.exec("create table tb1 (ts timestamp, str1 binary(10), str2 nchar(10))")
+        .await
+        .unwrap();
     taos.exec("insert into tb1 values(1621511073000, 'taosdata', NULL) (1621511073100, 'taos', '涛思数据')(1621511073200, 'a taos', '涛思数据')(1621511073200, 'nothing', 'abc')").await.unwrap();
 
     // Case 1, regex match `taos`.
