@@ -297,8 +297,11 @@ async fn prometheus(
         .decompress_vec(bytes)
         .map_err(|_| actix_web::error::ErrorNotAcceptable("bad snappy stream"))?;
 
-    let write_request = WriteRequest::decode(&mut decompressed.as_ref()).map_err(|_| {
-        actix_web::error::ErrorNotAcceptable("bad prometheus write request: deserializing error")
+    let write_request = WriteRequest::decode(&mut decompressed.as_ref()).map_err(|prost_err| {
+        // decompressed.len();
+        let err = "bad prometheus write request: deserializing error";
+        error!("{}, protolens: {}, raw error: {:?}", err, decompressed.len(), prost_err);
+        actix_web::error::ErrorNotAcceptable(err)
     })?;
     drop(decompressed); // drop decompressed data, it'll not be used after
 
