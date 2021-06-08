@@ -4,7 +4,7 @@ use crate::prometheus::types::*;
 
 use thiserror::Error;
 
-use libtaos::field::{ColumnMeta, Field, TaosQueryData};
+use libtaos::field::{TaosQueryData};
 use libtaos::Taos;
 
 use regex::Regex;
@@ -162,8 +162,7 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
         // call regex filters
         for row in rows {
             //log::trace!("{:?}", row);
-            if filters.len() > 0 {
-                if !row.iter().zip(&column_meta).all(|(field, meta)| {
+            if !filters.is_empty() && !row.iter().zip(&column_meta).all(|(field, meta)| {
                     if let Some(filter) = filters.get(&meta.name.as_str().replacen("t_", "", 1)) {
                         match filter {
                             LabelFilter::Re(pattern) => {
@@ -177,8 +176,7 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
                         true
                     }
                 }) {
-                    continue;
-                };
+                continue;
             }
 
             let mut labels = Vec::new();
@@ -193,7 +191,7 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
                         sample.timestamp = field.as_raw_timestamp().expect("should be timestamp");
                     }
                     "value" => {
-                        sample.value = field.as_double().map(|v| *v);
+                        sample.value = field.as_double().copied();
                     }
                     "taghash" => {}
                     name => {

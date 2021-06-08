@@ -18,7 +18,7 @@ impl FromStr for PromType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "read" | "read-request" | "readrequest" | "readreq" => Ok(PromType::ReadRequest),
-            "write" | "write-request" | "writerequest" | "writereq" => Ok(PromType::ReadRequest),
+            "write" | "write-request" | "writerequest" | "writereq" => Ok(PromType::WriteRequest),
             _ => Err("no match"),
         }
     }

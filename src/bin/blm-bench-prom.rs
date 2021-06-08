@@ -7,7 +7,7 @@ use itertools::Itertools;
 use log::{error, trace};
 use names::{Generator, Name};
 use rayon::prelude::*;
-use tokio;
+
 
 /// TDengine adapter for prometheus.
 #[derive(Debug, Clone, Clap)]
@@ -71,7 +71,7 @@ struct PromGenerator {
 }
 
 impl PromGenerator {
-    fn build_timeseries(&self, rt: &tokio::runtime::Runtime, ts_offset: i64) {
+    fn build_timeseries(&self, _rt: &tokio::runtime::Runtime, ts_offset: i64) {
         let interval = self.interval;
         let sample = Sample {
             value: Some(ts_offset as _),

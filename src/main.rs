@@ -25,7 +25,7 @@ pub mod utils;
 
 use bailongma::*;
 use taos::TaosError;
-use utils::*;
+use utils::{md5sum};
 
 //use protos::WriteRequest;
 fn table_name_escape(name: &str) -> String {
@@ -49,7 +49,7 @@ fn tag_name_escape(name: &str) -> String {
 }
 
 async fn handle_stable_schema<'prom>(
-    state: &AppState,
+    _state: &AppState,
     taos: &Taos,
     database: &str,
     timeseries: &'prom TimeSeries,
@@ -117,10 +117,10 @@ async fn handle_stable_schema<'prom>(
             }
             _ => {
                 error!("error: TaosError {{ code: {}, err: {} }}", code, err);
-                Err(taos::Error::RawTaosError(TaosError {
+                return Err(taos::Error::RawTaosError(TaosError {
                     code,
                     err: err.clone(),
-                }))?;
+                }).into());
             }
         }
     }
@@ -197,7 +197,7 @@ async fn handle_table_schema(
     database: &str,
     req: &WriteRequest,
 ) -> Result<()> {
-    use futures::stream::{self, iter, StreamExt, TryStream, TryStreamExt};
+    use futures::stream::{iter, StreamExt};
     let stream = iter(req.timeseries.iter());
     let res = stream
         .then(|ts| async move { handle_stable_schema(state, taos, database, ts).await })
@@ -516,7 +516,6 @@ async fn main() -> Result<()> {
     let workers = opts.workers;
     let listen = opts.listen.clone();
 
-    use sysinfo::{ProcessExt, SystemExt};
     let max_memory = opts.max_memory;
     let state = Arc::new(AppState {
         opts,

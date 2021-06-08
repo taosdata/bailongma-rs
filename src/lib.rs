@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use actix::prelude::*;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use thiserror::Error;
 
 mod prometheus;
@@ -102,8 +102,7 @@ impl Handler<PrometheusRemoteWriteMessage> for PrometheusRemoteWriteActor {
         let total = self.sys.get_total_memory();
         let ps = self
             .sys
-            .get_process(std::process::id() as _)
-            .ok_or_else(|| PrometheusRemoteWriteError::ProcessError)?;
+            .get_process(std::process::id() as _).ok_or(PrometheusRemoteWriteError::ProcessError)?;
         let ps_mem = ps.memory();
         info!(
             "MEMORY: {} in process, {}/{} used/total({:.2}%)",
