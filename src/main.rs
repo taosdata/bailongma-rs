@@ -330,7 +330,7 @@ async fn prometheus(
 
     // if not success, write data and save it to persistent storage.
     error!("failed with retries, the data will be lost");
-    std::fs::write(format!("prom-failed-{}.snappy", md5sum(bytes)), bytes)?;
+    std::fs::write(format!("prom-failed-write-{}.snappy", md5sum(bytes)), bytes)?;
     // });
     // body is loaded, now we can deserialize
     Ok(HttpResponse::InternalServerError().finish())
@@ -386,7 +386,7 @@ async fn prometheus_read_handler(
 
     // if not success, write data and save it to persistent storage.
     error!("failed with retries, the data will be lost");
-    std::fs::write(format!("prom-failed-{}.snappy", md5sum(bytes)), bytes)?;
+    std::fs::write(format!("prom-failed-read-{}.snappy", md5sum(bytes)), bytes)?;
     // });
     // body is loaded, now we can deserialize
     Ok(HttpResponse::InternalServerError().finish())
