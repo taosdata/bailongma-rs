@@ -32,6 +32,13 @@ jobs:
           mv target/release/bailongma target/release/bailongma-amd64
           strip target/release/blm-bench-prom
           mv target/release/blm-bench-prom target/release/blm-bench-prom-amd64
+      - name: Test
+        run: |
+          nohup target/release/bailongma-amd64 >blm.log 2>&1 &
+          sleep 5
+          target/release/blm-bench-prom-amd64 http://localhost:10203/adapters/prometheus/write --metrics 10 --points 10 --samples 10 --labels 8 --interval 50 --threads 8 --level trace --ci --wait 3000
+      - name: Show stables
+        run: taos -d prometheus -s "show stables"
 
       - name: Generate Changelog
         if: startsWith(github.ref, 'refs/tags/')
