@@ -1,3 +1,23 @@
+<a name="v0.2.2"></a>
+## v0.2.2 (2021-06-08)
+
+
+#### Bug Fixes
+
+* **remote-read:**  fix tag name not match for t_ prefix ([4dc58df3](4dc58df3))
+
+#### Utils
+
+*   add changelog section Utils ([4d86fedd](4d86fedd))
+* **clog:**  add enhancement changelog section ([e96c5bac](e96c5bac))
+* **prom-decode:**  support read/write request ([047396f1](047396f1))
+
+#### Enhancement
+
+* **prom:**  use different prefix for failed r/w requests ([bb3019c3](bb3019c3))
+
+
+
 <a name="v0.2.1"></a>
 ## v0.2.1 (2021-06-07)
 
