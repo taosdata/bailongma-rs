@@ -67,7 +67,7 @@ pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String, La
                     ));
                 }
             },
-            _ => {
+            name => {
                 match matcher.r#type() {
                     label_matcher::Type::Eq => {
                         if value.is_empty() {
@@ -86,10 +86,10 @@ pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String, La
                         matchers.push(format!("t_{} != \"{}\"", escaped_name, value));
                     }
                     label_matcher::Type::Re => {
-                        filters.insert(escaped_name, LabelFilter::Re(Regex::new(&value)?));
+                        filters.insert(name.to_string(), LabelFilter::Re(Regex::new(&value)?));
                     }
                     label_matcher::Type::Nre => {
-                        filters.insert(escaped_name, LabelFilter::Nre(Regex::new(&value)?));
+                        filters.insert(name.to_string(), LabelFilter::Nre(Regex::new(&value)?));
                     }
                 }
             }
@@ -141,35 +141,36 @@ fn test_query_to_sql() {
           }
          }"#;
     let query: Query = serde_json::from_str(data).unwrap();
-    let (table_name, sql, filters) = query_to_sql(&query, "prometheus").unwrap();
+    let (table_name, sql, _filters) = query_to_sql(&query, "prometheus").unwrap();
     assert_eq!(table_name, "node_cpu_seconds_total");
     println!("{}", sql);
-    assert_eq!(sql, "SELECT * FROM prometheus.node_cpu_seconds_total WHERE t_mode = 'system' AND t_monitor = 'example' AND ts >= 1621511013040 AND ts <= 1621511073040 ORDER BY ts")
+    assert_eq!(sql, "SELECT * FROM prometheus.node_cpu_seconds_total WHERE t_mode = \"system\" AND t_monitor = \"example\" AND ts >= 1621511013040 AND ts <= 1621511073040 ORDER BY ts")
 }
 
 pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<ReadResponse> {
     let ReadRequest { queries, .. } = &req;
     // let mut results = Vec::new();
     type Map = linked_hash_map::LinkedHashMap<Vec<Label>, Vec<Sample>>;
-    let mut results_map = Map::default();
+    let mut results = Vec::new();
     for query in queries {
+        let mut results_map = Map::default();
         let (table_name, sql, filters) = query_to_sql(query, database)?;
-        log::trace!("sql: {}", sql);
+        log::debug!("sql: {}", sql);
 
         let TaosQueryData { column_meta, rows } = taos.query(&sql).await?;
 
         // call regex filters
         for row in rows {
-            log::trace!("{:?}", row);
+            //log::trace!("{:?}", row);
             if filters.len() > 0 {
                 if !row.iter().zip(&column_meta).all(|(field, meta)| {
-                    if let Some(filter) = filters.get(meta.name.as_str()) {
+                    if let Some(filter) = filters.get(&meta.name.as_str().replacen("t_", "", 1)) {
                         match filter {
                             LabelFilter::Re(pattern) => {
                                 field.as_string().map_or(false, |v| pattern.is_match(&v))
                             }
                             LabelFilter::Nre(pattern) => {
-                                field.as_string().map_or(true, |v| !pattern.is_match(&v))
+                                field.as_string().map_or(false, |v| !pattern.is_match(&v))
                             }
                         }
                     } else {
@@ -213,13 +214,21 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
                 results_map.insert(labels, vec![sample]);
             }
         }
+        let timeseries = results_map
+            .into_iter()
+            .map(|(labels, samples)| TimeSeries { labels, samples })
+            .collect();
+        results.push(QueryResult { timeseries });
     }
-    let timeseries = results_map
-        .into_iter()
-        .map(|(labels, samples)| TimeSeries { labels, samples })
-        .collect();
-    let results = vec![QueryResult { timeseries }];
-    log::debug!("results: {:?}", results);
+
+    for result in results.iter() {
+        log::debug!("total series: {}", result.timeseries.len());
+        for ts in &result.timeseries {
+            use itertools::Itertools;
+            let labels = ts.labels.iter().map(|label| format!("{}={}",label.name, label.value)).join(",");
+            log::debug!("labels: {}", labels);
+        }
+    }
 
     Ok(ReadResponse { results })
 }
