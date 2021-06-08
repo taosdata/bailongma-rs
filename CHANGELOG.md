@@ -1,3 +1,13 @@
+<a name="v0.2.3"></a>
+## v0.2.3 (2021-06-08)
+
+
+#### Utils
+
+* **blm-bench-prom:**  support table check in CI ([5c83a0d1](5c83a0d1))
+
+
+
 <a name="v0.2.2"></a>
 ## v0.2.2 (2021-06-08)
 
