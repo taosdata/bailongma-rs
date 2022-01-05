@@ -10,7 +10,7 @@ edition = "2018"
 
 homepage = "https://taosdata.com/"
 keywords = ["TDengine", "prometheus", "remote", "blm"]
-license = "AGPL-1.0-or-later"
+license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
