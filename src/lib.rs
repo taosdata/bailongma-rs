@@ -102,7 +102,8 @@ impl Handler<PrometheusRemoteWriteMessage> for PrometheusRemoteWriteActor {
         let total = self.sys.total_memory();
         let ps = self
             .sys
-            .process(std::process::id() as _).ok_or(PrometheusRemoteWriteError::ProcessError)?;
+            .process(std::process::id() as _)
+            .ok_or(PrometheusRemoteWriteError::ProcessError)?;
         let ps_mem = ps.memory();
         info!(
             "MEMORY: {} in process, {}/{} used/total({:.2}%)",

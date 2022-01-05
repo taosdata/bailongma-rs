@@ -40,9 +40,9 @@ struct Opts {
     #[clap(short = 't', long, default_value = "read")]
     prom_type: PromType,
 }
-fn write_json<T: ?Sized>(opts: &Opts, data: &T) -> Result<()> 
+fn write_json<T: ?Sized>(opts: &Opts, data: &T) -> Result<()>
 where
-    T: serde::Serialize, 
+    T: serde::Serialize,
 {
     match &opts.json {
         None => {
@@ -64,7 +64,6 @@ where
         }
     }
     Ok(())
-
 }
 
 fn main() -> Result<()> {
@@ -87,7 +86,8 @@ fn main() -> Result<()> {
             write_json(&opts, &request)?;
         }
         PromType::WriteRequest => {
-            let request = WriteRequest::decode(&mut decompressed.as_ref()).expect("deserialzied ok");
+            let request =
+                WriteRequest::decode(&mut decompressed.as_ref()).expect("deserialzied ok");
             write_json(&opts, &request)?;
         }
     }

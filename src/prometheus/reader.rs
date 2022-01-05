@@ -288,10 +288,11 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
                     results_map.insert(labels, vec![sample]);
                 }
             }
-            timeseries.extend(results_map
-                .into_iter()
-                .map(|(labels, samples)| TimeSeries { labels, samples }));
-
+            timeseries.extend(
+                results_map
+                    .into_iter()
+                    .map(|(labels, samples)| TimeSeries { labels, samples }),
+            );
         }
         results.push(QueryResult { timeseries });
     }
