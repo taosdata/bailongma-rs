@@ -12,7 +12,7 @@ use actix_web::{
     App, HttpResponse, HttpServer, Result as WebResult,
 };
 use anyhow::Result;
-use clap::Clap;
+use clap::Parser;
 use dashmap::{DashMap, DashSet};
 
 use log::*;
@@ -25,7 +25,7 @@ pub mod utils;
 
 use bailongma::*;
 use taos::TaosError;
-use utils::{md5sum};
+use utils::md5sum;
 
 //use protos::WriteRequest;
 fn table_name_escape(name: &str) -> String {
@@ -46,6 +46,10 @@ fn tag_name_escape(name: &str) -> String {
         .replace(".", "_")
         .replace("-", "_")
         .to_lowercase()
+}
+
+fn tag_value_escape(value: &str) -> String {
+    value.replace("\"", "\\\"")
 }
 
 async fn handle_stable_schema<'prom>(
@@ -120,7 +124,8 @@ async fn handle_stable_schema<'prom>(
                 return Err(taos::Error::RawTaosError(TaosError {
                     code,
                     err: err.clone(),
-                }).into());
+                })
+                .into());
             }
         }
     }
@@ -178,16 +183,22 @@ async fn handle_stable_schema<'prom>(
             .values()
             .map(|value| {
                 if value.len() < 127 {
-                    format!("\"{}\"", value.escape_default())
+                    format!("\"{}\"", tag_value_escape(value))
                 } else {
-                    format!("\"{}\"", &value[0..127].escape_default())
+                    format!("\"{}\"", tag_value_escape(&value[0..127]))
                 }
             })
             .join(",")
     );
     debug!("created table {}.{}", database, table_name);
     trace!("create table with sql: {}", sql);
-    taos.exec(&sql).await?;
+    if let Err(taos::Error::RawTaosError(TaosError { code, err })) = taos.exec(&sql).await {
+        if err.contains("tag value too long") {
+            error!("tag value too long: {}", sql);
+        } else {
+            anyhow::bail!(err.clone());
+        }
+    }
     debug!("handle stable done");
     Ok(())
 }
@@ -393,7 +404,7 @@ async fn prometheus_read_handler(
 }
 
 /// TDengine adapter for prometheus.
-#[derive(Debug, Clone, Clap)]
+#[derive(Debug, Clone, Parser)]
 #[clap(setting = clap::AppSettings::ColoredHelp)]
 #[clap(version, author)]
 struct Opts {
@@ -432,6 +443,10 @@ struct Opts {
     /// Max memroy, unit: GB
     #[clap(short = 'M', long, default_value = "50")]
     max_memory: u64,
+
+    /// Tag data type
+    #[clap(short = 't', long, default_value = "binary")]
+    tag_type: String,
 }
 
 #[derive(Debug, Default)]

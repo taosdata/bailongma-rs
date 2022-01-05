@@ -4,13 +4,13 @@ use bailongma::*;
 
 use libtaos::Taos;
 
-use clap::Clap;
+use clap::Parser;
 use itertools::Itertools;
 use log::{error, trace};
 use names::{Generator, Name};
 use rayon::prelude::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Cfg {
     #[clap(long, default_value = "127.0.0.1")]
     host: String,
@@ -30,7 +30,7 @@ impl Cfg {
     }
 }
 /// TDengine adapter for prometheus.
-#[derive(Debug, Clap)]
+#[derive(Debug, Parser)]
 #[clap(setting = clap::AppSettings::ColoredHelp)]
 #[clap(version, author)]
 struct Opts {
@@ -189,7 +189,7 @@ impl PromGenerator {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let opts: Opts = Opts::parse();
+    let opts: Opts = <Opts as clap::Parser>::parse();
 
     //std::env::set_var("RUST_LOG", opts.level);
     env_logger::Builder::new().filter_level(opts.level).init();

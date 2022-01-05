@@ -7,7 +7,7 @@ use actix_web::{
     middleware::Logger, post, web::Bytes, App, HttpResponse, HttpServer, Result as WebResult,
 };
 use anyhow::Result;
-use clap::Clap;
+use clap::Parser;
 
 use std::sync::atomic::AtomicI32;
 
@@ -31,7 +31,7 @@ async fn prometheus_read(bytes: Bytes) -> WebResult<HttpResponse> {
 }
 
 /// TDengine adapter for prometheus.
-#[derive(Debug, Clone, Clap)]
+#[derive(Debug, Clone, Parser)]
 #[clap(setting = clap::AppSettings::ColoredHelp)]
 #[clap(version, author)]
 struct Opts {

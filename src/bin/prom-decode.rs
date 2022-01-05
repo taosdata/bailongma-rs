@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::Result;
-use clap::Clap;
+use clap::Parser;
 use prost::Message;
 
 use bailongma::*;
@@ -25,7 +25,7 @@ impl FromStr for PromType {
 }
 
 /// TDengine adapter for prometheus.
-#[derive(Debug, Clone, Clap)]
+#[derive(Debug, Clone, Parser)]
 #[clap(setting = clap::AppSettings::ColoredHelp)]
 #[clap(version, author)]
 struct Opts {

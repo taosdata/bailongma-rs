@@ -25,3 +25,7 @@ fn test_md5hash() {
 
     assert_eq!(md5sum(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
 }
+
+pub fn tag_value_escape(value: &str) -> String {
+    value.replace("\"", "\\\"")
+}
