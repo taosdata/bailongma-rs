@@ -1,3 +1,17 @@
+<a name="v0.2.4"></a>
+## v0.2.4 (2022-01-05)
+
+
+#### Bug Fixes
+
+* **[TD-12729:**  fix tag value escape error ([aa8f5291](aa8f5291))
+
+#### Documentation
+
+*   relicense to MIT ([99d27145](99d27145))
+
+
+
 <a name="v0.2.3"></a>
 ## v0.2.3 (2021-06-08)
 
