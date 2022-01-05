@@ -98,11 +98,12 @@ impl Handler<PrometheusRemoteWriteMessage> for PrometheusRemoteWriteActor {
         debug!("recieved {} bytes from prometheus", bytes.len());
 
         use sysinfo::{ProcessExt, SystemExt};
-        let used = self.sys.get_used_memory();
-        let total = self.sys.get_total_memory();
+        let used = self.sys.used_memory();
+        let total = self.sys.total_memory();
         let ps = self
             .sys
-            .get_process(std::process::id() as _).ok_or(PrometheusRemoteWriteError::ProcessError)?;
+            .process(std::process::id() as _)
+            .ok_or(PrometheusRemoteWriteError::ProcessError)?;
         let ps_mem = ps.memory();
         info!(
             "MEMORY: {} in process, {}/{} used/total({:.2}%)",

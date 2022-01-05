@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use crate::prometheus::types::*;
+use crate::utils::tag_value_escape;
 
 use thiserror::Error;
 
-use libtaos::field::{TaosQueryData};
+use libtaos::field::TaosQueryData;
 use libtaos::Taos;
 
 use regex::Regex;
@@ -32,41 +33,67 @@ use PrometheusReaderError::*;
 
 type Result<T> = std::result::Result<T, PrometheusReaderError>;
 
-fn escape_value(value: &str) -> String {
-    value.escape_default().to_string()
-}
-
 pub enum LabelFilter {
     Re(Regex),
     Nre(Regex),
 }
+
+#[derive(Debug)]
+pub enum MetricFilter {
+    Eq(String),
+    Neq(String),
+    Re(Regex),
+    Nre(Regex),
+}
+
+impl ToString for MetricFilter {
+    fn to_string(&self) -> String {
+        use MetricFilter::*;
+        match self {
+            Eq(s) => s.to_string(),
+            Neq(s) => format!("!{}", s),
+            Re(r) => format!("{}", r),
+            Nre(r) => format!("!{}", r),
+        }
+    }
+}
 pub type LabelFilters = BTreeMap<String, LabelFilter>;
-pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String, LabelFilters)> {
-    let mut table_name = String::new();
+
+/// Return a tuple:
+/// 1. metric filter
+/// 2. condition sql string
+/// 3. regex label filters
+pub fn query_to_sql(query: &Query) -> Result<(MetricFilter, String, LabelFilters)> {
+    let mut metric_filter = None;
     let mut matchers = Vec::new();
     let mut filters = LabelFilters::new();
     for matcher in &query.matchers {
         log::trace!("{:?}", matcher);
-        let escaped_name = escape_value(&matcher.name);
-        let value = escape_value(&matcher.value);
+        let escaped_name = tag_value_escape(&matcher.name);
+        let value = tag_value_escape(&matcher.value);
         match matcher.name.as_str() {
-            "__name__" => match matcher.r#type() {
-                label_matcher::Type::Eq => {
-                    if value.is_empty() {
-                        return Err(PrometheusReaderError::UnknownMetricNameMatchType {
-                            r#type: label_matcher::Type::Eq,
-                            name: value,
-                        });
-                    } else {
-                        table_name = value.clone();
+            "__name__" => {
+                if value.is_empty() {
+                    return Err(PrometheusReaderError::UnknownMetricNameMatchType {
+                        r#type: matcher.r#type(),
+                        name: value,
+                    });
+                }
+                match matcher.r#type() {
+                    label_matcher::Type::Eq => {
+                        metric_filter = Some(MetricFilter::Eq(value.clone()));
+                    }
+                    label_matcher::Type::Neq => {
+                        metric_filter = Some(MetricFilter::Neq(value.clone()));
+                    }
+                    label_matcher::Type::Re => {
+                        metric_filter = Some(MetricFilter::Re(Regex::new(&value)?));
+                    }
+                    label_matcher::Type::Nre => {
+                        metric_filter = Some(MetricFilter::Nre(Regex::new(&value)?));
                     }
                 }
-                _ => {
-                    return Err(PrometheusReaderError::UnsupportedMatcherTypeForMetrics(
-                        value,
-                    ));
-                }
-            },
+            }
             name => {
                 match matcher.r#type() {
                     label_matcher::Type::Eq => {
@@ -95,23 +122,64 @@ pub fn query_to_sql(query: &Query, database: &str) -> Result<(String, String, La
             }
         }
     }
-    if table_name.is_empty() {
+    if metric_filter.is_none() {
         return Err(NoneTableName);
     }
+    let metric_filter = metric_filter.unwrap();
     log::debug!(
-        "start time: {}, end time: {}",
+        "start time: {}, end time: {}, metric fiter: {:?}",
         query.start_timestamp_ms,
-        query.end_timestamp_ms
+        query.end_timestamp_ms,
+        metric_filter
     );
     matchers.push(format!("ts >= {}", query.start_timestamp_ms));
     matchers.push(format!("ts <= {}", query.end_timestamp_ms));
-    let sql = format!(
-        "SELECT * FROM {}.{} WHERE {} ORDER BY ts",
-        database,
-        table_name,
-        matchers.join(" AND ")
-    );
-    Ok((table_name, sql, filters))
+    let sql = format!("WHERE {} ORDER BY ts", matchers.join(" AND "));
+    Ok((metric_filter, sql, filters))
+}
+
+async fn metric_filter_to_tables(
+    taos: &Taos,
+    database: &str,
+    filter: &MetricFilter,
+) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    use itertools::Itertools;
+    use MetricFilter::*;
+
+    if let Eq(name) = filter {
+        names.push(name.to_string());
+        return Ok(names);
+    }
+    taos.use_database(database).await?;
+    let TaosQueryData { rows, .. } = taos.query("show stables").await?;
+    let metrics = rows
+        .into_iter()
+        .filter_map(|a| a.into_iter().next())
+        .map(|field| format!("{}", field))
+        .collect_vec();
+    match filter {
+        Neq(name) => {
+            names = metrics
+                .into_iter()
+                .filter(|metric| metric.as_str() != name)
+                .collect();
+        }
+        Re(pattern) => {
+            names = metrics
+                .into_iter()
+                .filter(|metric| pattern.is_match(&metric))
+                .collect();
+        }
+        Nre(pattern) => {
+            names = metrics
+                .into_iter()
+                .filter(|metric| !pattern.is_match(&metric))
+                .collect();
+        }
+        Eq(_) => unreachable!(),
+    }
+    Ok(names)
 }
 
 #[test]
@@ -141,10 +209,10 @@ fn test_query_to_sql() {
           }
          }"#;
     let query: Query = serde_json::from_str(data).unwrap();
-    let (table_name, sql, _filters) = query_to_sql(&query, "prometheus").unwrap();
-    assert_eq!(table_name, "node_cpu_seconds_total");
+    let (metric_filter, sql, _filters) = query_to_sql(&query).unwrap();
+    assert_eq!(metric_filter.to_string(), "node_cpu_seconds_total");
     println!("{}", sql);
-    assert_eq!(sql, "SELECT * FROM prometheus.node_cpu_seconds_total WHERE t_mode = \"system\" AND t_monitor = \"example\" AND ts >= 1621511013040 AND ts <= 1621511073040 ORDER BY ts")
+    assert_eq!(sql, "WHERE t_mode = \"system\" AND t_monitor = \"example\" AND ts >= 1621511013040 AND ts <= 1621511073040 ORDER BY ts")
 }
 
 pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<ReadResponse> {
@@ -153,69 +221,79 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
     type Map = linked_hash_map::LinkedHashMap<Vec<Label>, Vec<Sample>>;
     let mut results = Vec::new();
     for query in queries {
-        let mut results_map = Map::default();
-        let (table_name, sql, filters) = query_to_sql(query, database)?;
-        log::debug!("sql: {}", sql);
+        let (metric_filter, cond, filters) = query_to_sql(query)?;
+        log::debug!("condition: {}", cond);
+        let mut timeseries = Vec::new();
 
-        let TaosQueryData { column_meta, rows } = taos.query(&sql).await?;
+        for table_name in metric_filter_to_tables(taos, database, &metric_filter).await? {
+            let mut results_map = Map::default();
+            let sql = format!("select * from {}.{} {}", database, table_name, cond);
+            log::debug!("sql: {}", sql);
+            let TaosQueryData { column_meta, rows } = taos.query(&sql).await?;
 
-        // call regex filters
-        for row in rows {
-            //log::trace!("{:?}", row);
-            if !filters.is_empty() && !row.iter().zip(&column_meta).all(|(field, meta)| {
-                    if let Some(filter) = filters.get(&meta.name.as_str().replacen("t_", "", 1)) {
-                        match filter {
-                            LabelFilter::Re(pattern) => {
-                                field.as_string().map_or(false, |v| pattern.is_match(&v))
+            // call regex filters
+            for row in rows {
+                //log::trace!("{:?}", row);
+                if !filters.is_empty()
+                    && !row.iter().zip(&column_meta).all(|(field, meta)| {
+                        if let Some(filter) = filters.get(&meta.name.as_str().replacen("t_", "", 1))
+                        {
+                            match filter {
+                                LabelFilter::Re(pattern) => {
+                                    field.as_string().map_or(false, |v| pattern.is_match(&v))
+                                }
+                                LabelFilter::Nre(pattern) => {
+                                    field.as_string().map_or(false, |v| !pattern.is_match(&v))
+                                }
                             }
-                            LabelFilter::Nre(pattern) => {
-                                field.as_string().map_or(false, |v| !pattern.is_match(&v))
-                            }
+                        } else {
+                            true
                         }
-                    } else {
-                        true
-                    }
-                }) {
-                continue;
-            }
+                    })
+                {
+                    continue;
+                }
 
-            let mut labels = Vec::new();
-            let mut sample = Sample::default();
-            labels.push(Label {
-                name: "__name__".to_string(),
-                value: table_name.to_string(),
-            });
-            for (field, meta) in row.into_iter().zip(&column_meta) {
-                match meta.name.as_str() {
-                    "ts" => {
-                        sample.timestamp = field.as_raw_timestamp().expect("should be timestamp");
-                    }
-                    "value" => {
-                        sample.value = field.as_double().copied();
-                    }
-                    "taghash" => {}
-                    name => {
-                        if let Some(value) = field.as_string() {
-                            let label = Label {
-                                name: name.replacen("t_", "", 1),
-                                value: value.to_string(),
-                            };
-                            labels.push(label);
+                let mut labels = Vec::new();
+                let mut sample = Sample::default();
+                labels.push(Label {
+                    name: "__name__".to_string(),
+                    value: table_name.to_string(),
+                });
+                for (field, meta) in row.into_iter().zip(&column_meta) {
+                    match meta.name.as_str() {
+                        "ts" => {
+                            sample.timestamp =
+                                field.as_raw_timestamp().expect("should be timestamp");
+                        }
+                        "value" => {
+                            sample.value = field.as_double().copied();
+                        }
+                        "taghash" => {}
+                        name => {
+                            if let Some(value) = field.as_string() {
+                                let label = Label {
+                                    name: name.replacen("t_", "", 1),
+                                    value: value.to_string(),
+                                };
+                                labels.push(label);
+                            }
                         }
                     }
                 }
-            }
 
-            if let Some(entry) = results_map.get_mut(&labels) {
-                entry.push(sample);
-            } else {
-                results_map.insert(labels, vec![sample]);
+                if let Some(entry) = results_map.get_mut(&labels) {
+                    entry.push(sample);
+                } else {
+                    results_map.insert(labels, vec![sample]);
+                }
             }
+            timeseries.extend(
+                results_map
+                    .into_iter()
+                    .map(|(labels, samples)| TimeSeries { labels, samples }),
+            );
         }
-        let timeseries = results_map
-            .into_iter()
-            .map(|(labels, samples)| TimeSeries { labels, samples })
-            .collect();
         results.push(QueryResult { timeseries });
     }
 
@@ -223,7 +301,11 @@ pub async fn read(taos: &Taos, database: &str, req: &ReadRequest) -> Result<Read
         log::debug!("total series: {}", result.timeseries.len());
         for ts in &result.timeseries {
             use itertools::Itertools;
-            let labels = ts.labels.iter().map(|label| format!("{}={}",label.name, label.value)).join(",");
+            let labels = ts
+                .labels
+                .iter()
+                .map(|label| format!("{}={}", label.name, label.value))
+                .join(",");
             log::debug!("labels: {}", labels);
         }
     }
@@ -239,10 +321,36 @@ async fn test_read_request() {
         .unwrap();
     taos.exec("create database prom_read_0xabc").await.unwrap();
     taos.exec("use prom_read_0xabc").await.unwrap();
-    taos.exec("create table tb1 (ts timestamp, str1 binary(10), str2 nchar(10))")
+    taos.exec(
+        "create stable stb1 (ts timestamp, value double) tags(str1 binary(10), str2 nchar(10))",
+    )
+    .await
+    .unwrap();
+    taos.exec("insert into tb1 using stb1 tags('taosdata', NULL) values(1621511073000, 1.0)")
         .await
         .unwrap();
-    taos.exec("insert into tb1 values(1621511073000, 'taosdata', NULL) (1621511073100, 'taos', '涛思数据')(1621511073200, 'a taos', '涛思数据')(1621511073200, 'nothing', 'abc')").await.unwrap();
+    taos.exec(
+        "insert into tb2 using stb1 tags('taosdata',  '涛思数据') values(1621511073000, 2.0)",
+    )
+    .await
+    .unwrap();
+    taos.exec("insert into tb3 using stb1 tags('abc',  '涛思数据') values(1621511073000, 3.0)")
+        .await
+        .unwrap();
+
+    taos.exec(
+        "create stable stb2 (ts timestamp, value double) tags(str1 binary(10), str2 nchar(10))",
+    )
+    .await
+    .unwrap();
+    taos.exec("insert into t2b1 using stb2 tags('taosdata', NULL) values(1621511073000, 1.0)")
+        .await
+        .unwrap();
+    taos.exec(
+        "insert into t2b2 using stb2 tags('taosdata',  '涛思数据') values(1621511073000, 2.0)",
+    )
+    .await
+    .unwrap();
 
     // Case 1, regex match `taos`.
     let data = r#"{
@@ -253,7 +361,7 @@ async fn test_read_request() {
           "matchers": [
             {
              "name": "__name__",
-             "value": "tb1"
+             "value": "stb1"
             },
            {
             "name": "str1",
@@ -284,7 +392,7 @@ async fn test_read_request() {
           "matchers": [
             {
              "name": "__name__",
-             "value": "tb1"
+             "value": "stb1"
             },
            {
             "name": "str1",
@@ -304,7 +412,7 @@ async fn test_read_request() {
     let req: ReadRequest = serde_json::from_str(data).unwrap();
     let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
     println!("{:?}", res);
-    assert_eq!(res.results[0].timeseries.len(), 3);
+    assert_eq!(res.results[0].timeseries.len(), 2);
 
     // Case 3, regex not match `^taos`.
     let data = r#"{
@@ -315,7 +423,7 @@ async fn test_read_request() {
           "matchers": [
             {
              "name": "__name__",
-             "value": "tb1"
+             "value": "stb1"
             },
            {
             "name": "str1",
@@ -366,6 +474,33 @@ async fn test_read_request() {
     let req: ReadRequest = serde_json::from_str(data).unwrap();
     let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
     println!("{:?}", res);
-    assert_eq!(res.results[0].timeseries.len(), 2);
+    assert_eq!(res.results[0].timeseries.len(), 1);
+
+    // Case 5, regex match __name__
+    let data = r#"{
+        "queries": [
+         {
+          "start_timestamp_ms": 1621511073000,
+          "end_timestamp_ms": 1621511073400,
+          "matchers": [
+            {
+             "name": "__name__",
+             "type": 2,
+             "value": "tb"
+            }
+          ],
+          "hints": {
+           "func": "rate",
+           "start_ms": 1621511073000,
+           "end_ms": 1621511073400
+          }
+         }
+        ]
+       }"#;
+
+    let req: ReadRequest = serde_json::from_str(data).unwrap();
+    let res = read(&taos, "prom_read_0xabc", &req).await.unwrap();
+    println!("{:?}", res);
+    assert_eq!(res.results[0].timeseries.len(), 5);
     taos.exec("drop database prom_read_0xabc").await.unwrap();
 }
